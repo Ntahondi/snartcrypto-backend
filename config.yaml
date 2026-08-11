@@ -1,0 +1,113 @@
+# ============================================
+# SMARTCYPTO AI - YAML CONFIGURATION
+# ============================================
+# Note: .env values override these if set
+# ============================================
+
+environment: "production"  # production, development, testing
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# MODEL SETTINGS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+model:
+  path: "models/smart_trader_ai_best.keras"
+  scaler: "models/robust_scaler.joblib"
+  transformer: "models/power_transformer.joblib"
+  features: "models/feature_columns.joblib"
+  
+  # Signal Quality Filters
+  prediction_threshold: 0.55
+  confidence_threshold: 0.6       # Fallback only
+  min_confidence: 0.35            # ✅ Main filter
+  min_strength: 0.30              # ✅ Main filter
+  max_position_size: 0.15
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# API SETTINGS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+api:
+  host: "0.0.0.0"
+  port: 8000
+  debug: false
+  workers: 4
+  timeout: 120
+  rate_limit: "100/minute"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# DATA SETTINGS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+data:
+  storage_path: "storage/"
+  historical_data: "storage/historical_data/"
+  real_time_data: "storage/real_time_data/"
+  update_interval: 60
+  max_history: 1000
+  symbols:
+    - "BTCUSDT"
+    - "ETHUSDT"
+    - "ADAUSDT"
+    - "LINKUSDT"
+    - "SOLUSDT"
+    - "DOTUSDT"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TRADING & RISK SETTINGS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+trading:
+  risk:
+    # Fallback (if ATR unavailable)
+    stop_loss_pct: 0.02
+    take_profit_pct: 0.04
+    
+    # ATR-Based (Primary)
+    atr_multiplier_sl: 1.5
+    atr_multiplier_tp: 3.0
+    max_holding_hours: 4
+    
+    max_portfolio_risk: 0.3
+    risk_multipliers:
+      CONSERVATIVE: 0.5
+      MODERATE: 1.0
+      AGGRESSIVE: 1.5
+  
+  timeframes:
+    - "1h"
+    - "4h"
+    - "1d"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TRAINING SETTINGS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+training:
+  mode: "fine_tune"  # fine_tune | full_retrain
+  
+  fine_tune:
+    days: 60
+    learning_rate: 0.0001
+    epochs: 5
+    min_improvement: 0.015
+  
+  full_retrain:
+    days: 730
+    interval_months: 6
+  
+  auto_retrain: true
+  retrain_interval_hours: 24
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# LOGGING
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+logging:
+  level: "WARNING"  # Only warnings and errors
+  file: "logs/smartcrypto.log"
+  max_size: "100MB"
+  backup_count: 5
+  format: "%(asctime)s - %(levelname)s - %(message)s"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# MONITORING
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+monitoring:
+  health_check_interval: 300
+  performance_tracking: true
+  alert_threshold: 0.42  # Alert if accuracy drops below 42%
