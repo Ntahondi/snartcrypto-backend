@@ -1,0 +1,25 @@
+# Virtual Environments
+venv/
+.venv/
+env/
+
+# Git
+.git/
+.gitignore
+
+# Python Cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# IDE & OS Files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Temp Files
+models/temp/
+*.tmp

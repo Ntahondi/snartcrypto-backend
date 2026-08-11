@@ -1,0 +1,157 @@
+{
+  "signals": {
+    "total": 394,
+    "open": 358,
+    "closed": 36,
+    "wins": 25,
+    "losses": 11,
+    "win_rate": 0.6944444444444444,
+    "signal_types": {
+      "SHORT_TERM_ALIGNMENT": 273,
+      "STRONG_MULTI_TIMEFRAME_ALIGNMENT": 121
+    },
+    "actions": {
+      "SELL": 156,
+      "BUY": 238
+    }
+  },
+  "positions": {
+    "total": 16,
+    "open": 6,
+    "closed": 10,
+    "wins": 0,
+    "losses": 0,
+    "win_rate": 0.0,
+    "total_pnl": 0.0,
+    "avg_pnl": 0.0,
+    "avg_pnl_pct": 0.0,
+    "best_trade": 0.0,
+    "worst_trade": 0.0,
+    "symbol_stats": {
+      "ETHUSDT": {
+        "trades": 2,
+        "wins": 0,
+        "losses": 2,
+        "total_pnl": 0.0
+      },
+      "LINKUSDT": {
+        "trades": 2,
+        "wins": 0,
+        "losses": 2,
+        "total_pnl": 0.0
+      },
+      "DOTUSDT": {
+        "trades": 2,
+        "wins": 0,
+        "losses": 2,
+        "total_pnl": 0.0
+      },
+      "SOLUSDT": {
+        "trades": 2,
+        "wins": 0,
+        "losses": 2,
+        "total_pnl": 0.0
+      },
+      "BTCUSDT": {
+        "trades": 1,
+        "wins": 0,
+        "losses": 1,
+        "total_pnl": 0.0
+      },
+      "ADAUSDT": {
+        "trades": 1,
+        "wins": 0,
+        "losses": 1,
+        "total_pnl": 0.0
+      }
+    }
+  },
+  "timeframes": {
+    "1h": {
+      "SELL": {
+        "correct": 13,
+        "total": 405
+      },
+      "BUY": {
+        "correct": 13,
+        "total": 254
+      }
+    },
+    "4h": {
+      "SELL": {
+        "correct": 13,
+        "total": 407
+      },
+      "BUY": {
+        "correct": 13,
+        "total": 252
+      }
+    },
+    "1d": {
+      "HOLD": {
+        "correct": 12,
+        "total": 192
+      },
+      "SELL": {
+        "correct": 11,
+        "total": 437
+      },
+      "BUY": {
+        "correct": 3,
+        "total": 30
+      }
+    }
+  },
+  "symbols": {
+    "BTCUSDT": {
+      "total_signals": 118,
+      "wins": 5,
+      "losses": 3,
+      "total_pnl": 2.8742029361282477,
+      "avg_pnl": 0.024357652001086846
+    },
+    "LINKUSDT": {
+      "total_signals": 105,
+      "wins": 3,
+      "losses": 2,
+      "total_pnl": 0.5981341130525024,
+      "avg_pnl": 0.005696515362404785
+    },
+    "DOTUSDT": {
+      "total_signals": 92,
+      "wins": 6,
+      "losses": 0,
+      "total_pnl": 6.814938058416984,
+      "avg_pnl": 0.07407541367844547
+    },
+    "ETHUSDT": {
+      "total_signals": 123,
+      "wins": 4,
+      "losses": 4,
+      "total_pnl": 0.5195724766422364,
+      "avg_pnl": 0.00422416647676615
+    },
+    "ADAUSDT": {
+      "total_signals": 103,
+      "wins": 4,
+      "losses": 2,
+      "total_pnl": 4.250719989551906,
+      "avg_pnl": 0.04126912611215443
+    },
+    "SOLUSDT": {
+      "total_signals": 118,
+      "wins": 4,
+      "losses": 2,
+      "total_pnl": 3.58354457183386,
+      "avg_pnl": 0.030369021795202206
+    }
+  },
+  "summary": {
+    "total_signals": 394,
+    "total_positions": 16,
+    "closed_trades": 10,
+    "win_rate": 0.0,
+    "total_pnl": 0.0,
+    "status": "LOSING"
+  }
+}

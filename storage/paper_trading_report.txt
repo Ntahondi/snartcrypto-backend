@@ -1,0 +1,42 @@
+
+======================================================================
+                    PAPER TRADING REPORT
+======================================================================
+                                                                      
+  CAPITAL:                                                          
+     Initial: $10.0000                                        
+     Current: $0.9413                                        
+     Total PnL: $0.2174 (2.17%)                      
+                                                                      
+  STATISTICS:                                                        
+     Total Trades: 20                                              
+     Open Trades: 1                                               
+     Wins: 12 | Losses: 8                                  
+     Win Rate: 60.0%                                           
+     Avg Win: $0.0222 | Avg Loss: $-0.0061                    
+     Max Win: $0.1013 | Max Loss: $-0.0399                  
+                                                                      
+  BEST SYMBOL: SOLUSDT ($0.1620)             
+  WORST SYMBOL: BTCUSDT ($-0.0326)            
+                                                                      
+======================================================================
+
+RECENT TRADES:
+   ADAUSDT BUY: $-0.0002 (-0.99%) - TIMEOUT (4.8h)
+   DOTUSDT BUY: $-0.0013 (-1.35%) - TIMEOUT (4.8h)
+   DOTUSDT BUY: $-0.0013 (-1.35%) - TIMEOUT (4.0h)
+   LINKUSDT BUY: $0.0012 (1.00%) - TIMEOUT (4.0h)
+   BTCUSDT BUY: $0.0029 (2.69%) - TIMEOUT (4.0h)
+
+OPEN TRADES:
+   LINKUSDT BUY: Entry $7.7700 | SL: $7.6146 | TP: $8.0808
+
+SYMBOL PERFORMANCE:
+   SOLUSDT: 3 trades, 3/0 W/L, $0.1620
+   ETHUSDT: 5 trades, 5/0 W/L, $0.0912
+   LINKUSDT: 2 trades, 2/0 W/L, $0.0055
+   ADAUSDT: 3 trades, 0/3 W/L, $-0.0013
+   DOTUSDT: 4 trades, 0/4 W/L, $-0.0074
+   BTCUSDT: 3 trades, 2/1 W/L, $-0.0326
+
+Report Generated: 2026-06-22 20:48:23 UTC

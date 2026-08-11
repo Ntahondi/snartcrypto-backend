@@ -1,0 +1,60 @@
+{
+  "timestamp": "2026-06-22T20:48:23.405541+00:00",
+  "initial_capital": 10.0,
+  "current_capital": 0.9412901208449094,
+  "total_pnl": 0.21741501307720945,
+  "total_return_pct": 2.1741501307720945,
+  "stats": {
+    "total_trades": 52,
+    "wins": 12,
+    "losses": 8,
+    "total_pnl": 0.21741501307720945,
+    "win_rate": 0.6,
+    "avg_win": 0.022167230671865257,
+    "avg_loss": -0.006073969373146704,
+    "max_win": 0.10128706535947712,
+    "max_loss": -0.03993175498517362,
+    "best_symbol": "SOLUSDT",
+    "worst_symbol": "BTCUSDT",
+    "symbol_performance": {
+      "BTCUSDT": {
+        "trades": 3,
+        "wins": 2,
+        "losses": 1,
+        "pnl": -0.032622768732709605
+      },
+      "ETHUSDT": {
+        "trades": 5,
+        "wins": 5,
+        "losses": 0,
+        "pnl": 0.09123099002755752
+      },
+      "ADAUSDT": {
+        "trades": 3,
+        "wins": 0,
+        "losses": 3,
+        "pnl": -0.0012600000000000029
+      },
+      "SOLUSDT": {
+        "trades": 3,
+        "wins": 3,
+        "losses": 0,
+        "pnl": 0.1620047273662325
+      },
+      "DOTUSDT": {
+        "trades": 4,
+        "wins": 0,
+        "losses": 4,
+        "pnl": -0.0074000000000000055
+      },
+      "LINKUSDT": {
+        "trades": 2,
+        "wins": 2,
+        "losses": 0,
+        "pnl": 0.005462064416129052
+      }
+    }
+  },
+  "open_trades_count": 1,
+  "closed_trades_count": 20
+}
