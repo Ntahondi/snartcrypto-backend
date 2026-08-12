@@ -57,7 +57,7 @@ class TelegramService:
     # 1. VIP CHANNEL SIGNAL BROADCASTING
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     async def broadcast_signal(self, signal: Dict) -> bool:
-            """Format and broadcast an accepted 3-Tier AI trading signal with 1-Tap Copy Block"""
+            """Format and broadcast transparent 3-AI Voting Committee signal to VIP Channel"""
             if not self.enable_telegram or not self.channel_id:
                 return False
 
@@ -79,52 +79,61 @@ class TelegramService:
             tp1_pct = abs((tp1 - price) / price * 100) if price > 0 else 0
             tp2_pct = abs((tp2 - price) / price * 100) if price > 0 else 0
 
+            # Extract vote breakdown
+            votes = signal.get('votes', {})
+            v_m1 = votes.get('model_1', 'HOLD')
+            v_m2 = votes.get('model_2', 'HOLD')
+            v_m3 = votes.get('model_3', 'HOLD')
+            maj_tag = votes.get('tag', '2/3 MAJORITY')
+
             expected_returns = signal.get('expected_returns', {})
-            gpt_sim = signal.get('market_gpt_simulation', {})
             exp_4h = expected_returns.get('4h_return', 'N/A')
             
-            # Display the AI Win Probability for the trade direction
+            gpt_sim = signal.get('market_gpt_simulation', {})
             ai_win_prob = gpt_sim.get('win_probability', f"{confidence:.1%}")
 
-            # World-Class Institutional HTML Layout
+            # Format Vote Icons
+            def icon(v): return "🟢 BUY" if v == "BUY" else ("🔴 SELL" if v == "SELL" else "🟡 HOLD")
+
+            # Transparent 100% Honest HTML Layout
             message = (
                 f"<b>🚀 SNARTCRYPTO VIP SIGNAL</b>\n\n"
                 f"<b>📌 ASSET</b>\n"
                 f"├ <b>Symbol:</b> #{symbol}USDT\n"
-                f"├ <b>Direction:</b> {direction_icon}\n"
+                f"├ <b>Direction:</b> {direction_icon} [{maj_tag}]\n"
                 f"└ <b>Entry:</b> ${price:,.4f}\n\n"
+                f"<b>🤖 3-AI COMMITTEE VOTING BREAKDOWN</b>\n"
+                f"├ Model 1    : {icon(v_m1)}  (Exp 4H: {exp_4h})\n"
+                f"├ Model 2    : {icon(v_m2)}  (1H={signal.get('direction_1h')}, 4H={signal.get('direction_4h')})\n"
+                f"└ Model 3    : {icon(v_m3)}  (WinProb: {ai_win_prob})\n\n"
                 f"<b>🎯 TAKE PROFIT TARGETS</b>\n"
                 f"├ TP1: ${tp1:,.4f}  (+{tp1_pct:.2f}%)\n"
                 f"└ TP2: ${tp2:,.4f}  (+{tp2_pct:.2f}%)\n\n"
                 f"<b>🛡️ STOP LOSS</b>\n"
                 f"└ ${stop_loss:,.4f}  (-{sl_pct:.2f}%)\n\n"
-                f"<b>📊 AI ENSEMBLE ANALYSIS</b>\n"
-                f"├ 4H Expected Return: <b>{exp_4h}</b>\n"
-                f"├ AI Win Probability: <b>{ai_win_prob} 🎯</b>\n"
+                f"<b>📊 RISK & REGIME ANALYSIS</b>\n"
                 f"├ Signal Strength: {strength:.1%}\n"
-                f"├ Timeframes: 1H={signal.get('direction_1h')} • 4H={signal.get('direction_4h')} • 1D={signal.get('direction_1d')}\n"
                 f"├ Risk Level: {signal.get('risk_level', 'MEDIUM')}\n"
                 f"└ Market Regime: {signal.get('market_regime', 'TRENDING')}\n\n"
                 f"<b>⏰ MAX HOLDING TIME</b>\n"
                 f"└ {max_hold} Hours\n\n"
-                f"<i>⚠️ SnartCrypto Automated Signal • Manage your risk responsibly.</i>\n\n"
+                f"<i> SnartCrypto Automated Signal • Manage your risk responsibly.</i>\n\n"
                 f"<pre>━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"📋 1-TAP COPY SIGNAL DETAILS\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"SYMBOL: #{symbol}USDT\n"
-                f"DIRECTION: {action}\n"
+                f"DIRECTION: {action} ({maj_tag})\n"
                 f"ENTRY: ${price:,.4f}\n"
                 f"TP1: ${tp1:,.4f} (+{tp1_pct:.2f}%)\n"
                 f"TP2: ${tp2:,.4f} (+{tp2_pct:.2f}%)\n"
                 f"SL: ${stop_loss:,.4f} (-{sl_pct:.2f}%)\n"
-                f"RISK: {signal.get('risk_level', 'MEDIUM')}\n"
-                f"REGIME: {signal.get('market_regime', 'TRENDING')}\n"
+                f"VOTES: M1={v_m1} | M2={v_m2} | M3={v_m3}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</pre>"
             )
 
             success = await self._send_message(self.channel_id, message)
             if success:
-                logger.info(f"📣 Broadcasted VIP Telegram Signal for #{symbol}USDT ({ai_win_prob} Win Prob)")
+                logger.info(f"📣 Broadcasted VIP Telegram Signal for #{symbol}USDT ({maj_tag})")
             return success
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

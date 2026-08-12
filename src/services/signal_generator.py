@@ -222,14 +222,12 @@ class SignalGenerator:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 2-OUT-OF-3 MAJORITY VOTING EVALUATION
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
     async def generate_signal(self, symbol: str, current_data: pd.DataFrame, current_price: float) -> Optional[Dict]:
-            """Generate high-conviction signal using 2-out-of-3 or 3-out-of-3 AI Majority Voting Ensemble"""
+            """Generate signal using 2/3 or 3/3 Majority Voting Ensemble with 100% transparent vote recording"""
             if not self.model_loaded:
                 return None
 
             try:
-                # Prepare Data Inputs
                 seq_tensor, raw_matrix = self.prepare_regression_sequence(current_data)
                 smart_features = self.prepare_smart_trader_features(current_data)
 
@@ -238,7 +236,7 @@ class SignalGenerator:
                 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 vote_m1 = 'HOLD'
                 pred_1h, pred_4h, pred_12h = 0.0, 0.0, 0.0
-                min_thresh = getattr(self.settings, 'MIN_EXPECTED_RETURN_THRESHOLD', 0.005)  # 0.7%
+                min_thresh = getattr(self.settings, 'MIN_EXPECTED_RETURN_THRESHOLD', 0.005)  # 0.5%
 
                 if self.model_reg is not None and seq_tensor is not None:
                     preds_reg = self.model_reg.predict(seq_tensor, verbose=0)
@@ -246,9 +244,9 @@ class SignalGenerator:
                     pred_4h = float(preds_reg[1][0][0])
                     pred_12h = float(preds_reg[2][0][0])
 
-                    if pred_4h >= min_thresh and pred_1h > 0:
+                    if (pred_4h >= min_thresh or pred_12h >= min_thresh * 1.5) and pred_1h > 0:
                         vote_m1 = 'BUY'
-                    elif pred_4h <= -min_thresh and pred_1h < 0:
+                    elif (pred_4h <= -min_thresh or pred_12h <= -min_thresh * 1.5) and pred_1h < 0:
                         vote_m1 = 'SELL'
 
                 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -289,19 +287,11 @@ class SignalGenerator:
                         vote_m3 = 'SELL'
 
                 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                # TALLY VOTES & DETERMINATION
+                # TALLY VOTES & MAJORITY DECISION
                 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 votes = [vote_m1, vote_m2, vote_m3]
                 buy_votes = votes.count('BUY')
                 sell_votes = votes.count('SELL')
-
-                # Log diagnostic vote breakdown for every symbol
-                self.logger.info(
-                    f"📊 3-AI Vote Scan [{symbol}]: "
-                    f"Model1={vote_m1} ({pred_4h:+.2%}) | "
-                    f"Model2={vote_m2} | "
-                    f"Model3={vote_m3} (WinProb: {raw_win_prob:.1%}, LossProb: {raw_loss_prob:.1%})"
-                )
 
                 if buy_votes >= 2:
                     final_action = 'BUY'
@@ -313,20 +303,11 @@ class SignalGenerator:
                     self.logger.info(f"⏭️ Skipping {symbol}: No 2/3 Majority Consensus (Votes: M1={vote_m1}, M2={vote_m2}, M3={vote_m3})")
                     return None
 
-                # FIX: Calculate true Win Probability for the chosen direction!
-                # For BUY trades, win_prob = raw_win_prob (chance of price going UP)
-                # For SELL trades, win_prob = raw_loss_prob (chance of price going DOWN)
-                if final_action == 'BUY':
-                    actual_win_prob = raw_win_prob
-                else:
-                    actual_win_prob = raw_loss_prob
+                # Calculate true Win Probability for chosen direction
+                actual_win_prob = raw_win_prob if final_action == 'BUY' else raw_loss_prob
+                strength = min(actual_win_prob * 0.9 + abs(pred_4h) * 10.0, 1.0)
 
-                # Status description: 3/3 UNANIMOUS vs 2/3 MAJORITY
-                consensus_tag = "3/3 UNANIMOUS APPROVED" if vote_count == 3 else "2/3 MAJORITY APPROVED"
-
-                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                # STRATEGY RISK & LEVERAGE LEVELS
-                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                # Strategy Levels
                 atr = float(current_data['atr14'].iloc[-1]) if 'atr14' in current_data.columns else current_price * 0.01
                 sl_mult = float(self.config['trading']['risk']['atr_multiplier_sl'])
                 tp_mult = float(self.config['trading']['risk']['atr_multiplier_tp'])
@@ -340,27 +321,27 @@ class SignalGenerator:
                     tp1 = current_price - (tp_mult * atr * 0.7)
                     tp2 = current_price - (tp_mult * atr)
 
-                confidence = max(0.55, actual_win_prob)
-                strength = min(actual_win_prob * 0.9 + abs(pred_4h) * 10.0, 1.0)
+                consensus_tag = "3/3 UNANIMOUS" if vote_count == 3 else "2/3 MAJORITY"
 
                 signal = {
                     'timestamp': datetime.now().isoformat() + 'Z',
                     'symbol': symbol,
                     'action': final_action,
                     'price': float(current_price),
-                    'confidence': float(confidence),
+                    'confidence': float(actual_win_prob),
                     'signal_strength': float(strength),
-                    'direction_1h': action_1h if action_1h != 'HOLD' else final_action,
-                    'direction_4h': action_4h if action_4h != 'HOLD' else final_action,
-                    'direction_1d': action_1d if action_1d != 'HOLD' else final_action,
+                    # Record EXACT raw outputs from Model 2
+                    'direction_1h': action_1h,
+                    'direction_4h': action_4h,
+                    'direction_1d': action_1d,
                     'risk_level': risk_level,
                     'market_regime': market_regime,
                     'votes': {
-                        'model_1_regression': vote_m1,
-                        'model_2_smart_trader': vote_m2,
-                        'model_3_market_gpt': vote_m3,
-                        'majority_votes': f"{vote_count}/3",
-                        'consensus_type': consensus_tag
+                        'model_1': vote_m1,
+                        'model_2': vote_m2,
+                        'model_3': vote_m3,
+                        'majority': f"{vote_count}/3",
+                        'tag': consensus_tag
                     },
                     'expected_returns': {
                         '1h_return': f"{pred_1h:+.2%}",
@@ -376,12 +357,12 @@ class SignalGenerator:
                         'take_profit_1': float(tp1),
                         'take_profit_2': float(tp2),
                         'atr_used': float(atr),
-                        'max_holding_hours': getattr(self.settings, 'MAX_HOLDING_HOURS', 8)
+                        'max_holding_hours': self.config['trading']['risk']['max_holding_hours']
                     },
                     'analysis': {
-                        'summary': f"{consensus_tag} {final_action} on {symbol}. Expected 4H Return: {pred_4h:+.2%}",
+                        'summary': f"{consensus_tag} {final_action} on {symbol} (M1={vote_m1}, M2={vote_m2}, M3={vote_m3})",
                         'signal_type': 'STRONG_TREND',
-                        'detected_pattern': f"AI_{vote_count}_OF_3_CONSENSUS"
+                        'detected_pattern': f"AI_{vote_count}_OF_3_VOTE"
                     },
                     'outcome': 'OPEN',
                     'pnl_percentage': None,
@@ -389,7 +370,7 @@ class SignalGenerator:
                 }
 
                 self.logger.info(
-                    f"🎯 {consensus_tag} [{symbol}]: {final_action} (Votes: {vote_count}/3) | "
+                    f"🎯 {consensus_tag} APPROVED {symbol}: {final_action} (Votes: {vote_count}/3) | "
                     f"M1={vote_m1}, M2={vote_m2}, M3={vote_m3} | WinProb: {actual_win_prob:.1%}"
                 )
 
@@ -399,7 +380,7 @@ class SignalGenerator:
                 return signal
 
             except Exception as e:
-                self.logger.error(f"Error generating voting signal for {symbol}: {e}", exc_info=True)
+                self.logger.error(f"Error generating signal for {symbol}: {e}", exc_info=True)
                 return None
 
     def update_performance_metrics(self, success: bool):
