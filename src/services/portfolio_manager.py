@@ -184,42 +184,80 @@ class PortfolioManager:
         return default_atr.get(symbol, None)
     
     def should_open_position(self, signal: Dict) -> Tuple[bool, str]:
-        symbol = signal.get('symbol')
-        confidence = signal.get('confidence', 0)
-        signal_strength = signal.get('signal_strength', 0)
-        action = signal.get('action', 'HOLD')
-        
-        if action == 'HOLD':
-            return False, "Signal action is HOLD"
-        
-        min_conf = max(self.profile.min_confidence, 0.35)
-        if confidence < min_conf:
-            return False, f"Confidence too low: {confidence:.2%} < {min_conf:.2%}"
-        
-        min_strength = max(self.profile.min_signal_strength, 0.30)
-        if signal_strength < min_strength:
-            return False, f"Strength too low: {signal_strength:.2%} < {min_strength:.2%}"
-        
-        open_positions = [p for p in self.open_positions.values() if p.status == 'OPEN']
-        
-        if symbol in self.open_positions and not self.profile.allow_multiple_positions:
-            return False, f"Already have open position for {symbol}"
-        
-        if len(open_positions) >= self.profile.max_total_positions:
-            return False, f"Max positions reached ({len(open_positions)}/{self.profile.max_total_positions})"
-        
-        if self.daily_trades >= self.profile.max_daily_trades:
-            return False, f"Daily trade limit reached ({self.daily_trades})"
-        
-        if self.daily_pnl <= -self.profile.max_daily_loss_pct * self.initial_capital:
-            return False, f"Daily loss limit reached (${abs(self.daily_pnl):.2f})"
-        
-        if symbol in self.last_trade_time:
-            time_since = (datetime.now() - self.last_trade_time[symbol]).total_seconds()
-            if time_since < self.profile.min_time_between_trades:
-                return False, f"Cooldown active ({int(time_since)}s < {self.profile.min_time_between_trades}s)"
-        
-        return True, "Signal meets all criteria"
+            """
+            Strict Real-Money Execution Gate for Binance / PortfolioManager.
+            Higher quality standards than public Telegram broadcasting.
+            """
+            symbol = signal.get('symbol')
+            action = signal.get('action', 'HOLD')
+            confidence = float(signal.get('confidence', 0))
+            strength = float(signal.get('signal_strength', 0))
+            risk_level = signal.get('risk_level', 'MEDIUM')
+            
+            votes = signal.get('votes', {})
+            vote_tag = votes.get('tag', '')
+
+            # 1. Action Check
+            if action == 'HOLD':
+                return False, "Signal action is HOLD"
+
+            # 2. GATE 1: Consensus Quality (3/3 Unanimous OR 2/3 with >= 65% WinProb)
+            if vote_tag != "3/3 UNANIMOUS" and confidence < 0.65:
+                return False, f"Real Money Gate: Requires 3/3 Unanimous OR >= 65% WinProb (Got {vote_tag}, Conf: {confidence:.1%})"
+
+            # 3. GATE 2: Strict Risk Level Filter (Reject HIGH risk setups)
+            if risk_level == "HIGH":
+                return False, f"Real Money Gate: Rejected HIGH risk level setup on {symbol}"
+
+            # 4. GATE 3: Minimum Confidence & Strength Thresholds
+            if confidence < 0.55:
+                return False, f"Real Money Gate: Confidence {confidence:.1%} < 55.0%"
+
+            if strength < 0.40:
+                return False, f"Real Money Gate: Strength {strength:.1%} < 40.0%"
+
+            # 5. GATE 4: Derivatives Funding Rate Conflict Check
+            derivatives = signal.get('derivatives', {})
+            funding_rate = float(derivatives.get('funding_rate', 0.0))
+            if action == 'BUY' and funding_rate > 0.005:
+                return False, f"Real Money Gate: High funding rate ({funding_rate:.4f}%) conflicts with BUY"
+            elif action == 'SELL' and funding_rate < -0.005:
+                return False, f"Real Money Gate: Negative funding rate ({funding_rate:.4f}%) conflicts with SELL"
+
+            # 6. GATE 5: Order Book Pressure Check
+            ob = signal.get('orderbook', {})
+            imbalance = float(ob.get('imbalance', 0.0))
+            if action == 'BUY' and imbalance < -0.30:
+                return False, f"Real Money Gate: Ask-wall selling pressure ({imbalance:.2f}) conflicts with BUY"
+            elif action == 'SELL' and imbalance > 0.30:
+                return False, f"Real Money Gate: Bid-wall buying pressure ({imbalance:.2f}) conflicts with SELL"
+
+            # 7. Portfolio Position Limits
+            active_positions = {k: v for k, v in self.open_positions.items() if v.status == 'OPEN'}
+            if symbol in active_positions and not self.profile.allow_multiple_positions:
+                return False, f"Already have open position for {symbol}"
+
+            if len(active_positions) >= min(self.profile.max_total_positions, 3):  # Cap at 3 max open trades
+                return False, f"Max total positions reached ({len(active_positions)}/3)"
+
+            # 8. Daily Loss & Drawdown Protection
+            if datetime.now().date() != self.today:
+                self.daily_pnl = 0.0
+                self.daily_trades = 0
+                self.today = datetime.now().date()
+
+            if self.daily_trades >= self.profile.max_daily_trades:
+                return False, f"Daily trade limit reached ({self.daily_trades})"
+
+            if self.daily_pnl <= -self.profile.max_daily_loss_pct * self.initial_capital:
+                return False, f"Daily loss limit reached (${abs(self.daily_pnl):.2f})"
+
+            # 9. Capital Availability Check
+            min_allocation = self.initial_capital * 0.01
+            if self.available_capital < min_allocation:
+                return False, f"Insufficient capital: ${self.available_capital:.2f}"
+
+            return True, "Passed all real-money execution criteria"
     
     def open_position(self, signal: Dict) -> Optional[Position]:
         """Open position with AI-enhanced parameters (Clean Async Execution)"""
