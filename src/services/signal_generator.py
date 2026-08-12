@@ -224,168 +224,183 @@ class SignalGenerator:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     async def generate_signal(self, symbol: str, current_data: pd.DataFrame, current_price: float) -> Optional[Dict]:
-        """Generate high-conviction signal using 2-out-of-3 Majority Voting Ensemble"""
-        if not self.model_loaded:
-            return None
-
-        try:
-            # Prepare Data Inputs
-            seq_tensor, raw_matrix = self.prepare_regression_sequence(current_data)
-            smart_features = self.prepare_smart_trader_features(current_data)
-
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # VOTE 1: Model 1 (Continuous Return Regression AI)
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            vote_m1 = 'HOLD'
-            pred_1h, pred_4h, pred_12h = 0.0, 0.0, 0.0
-            min_thresh = getattr(self.settings, 'MIN_EXPECTED_RETURN_THRESHOLD', 0.007)  # 0.7%
-
-            if self.model_reg is not None and seq_tensor is not None:
-                preds_reg = self.model_reg.predict(seq_tensor, verbose=0)
-                pred_1h = float(preds_reg[0][0][0])
-                pred_4h = float(preds_reg[1][0][0])
-                pred_12h = float(preds_reg[2][0][0])
-
-                if pred_4h >= min_thresh and pred_1h > 0:
-                    vote_m1 = 'BUY'
-                elif pred_4h <= -min_thresh and pred_1h < 0:
-                    vote_m1 = 'SELL'
-
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # VOTE 2: Model 2 (6-Head Smart Trader AI)
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            vote_m2 = 'HOLD'
-            risk_level, market_regime = 'MEDIUM', 'TRENDING'
-            if self.model_smart is not None and smart_features is not None:
-                preds_smart = self.model_smart.predict(smart_features, verbose=0)
-                action_4h = self.direction_map[np.argmax(preds_smart[1][0])]
-                action_1d = self.direction_map[np.argmax(preds_smart[2][0])]
-                risk_level = self.risk_map[int(np.argmax(preds_smart[4][0]))]
-                market_regime = self.regime_map[int(np.argmax(preds_smart[5][0]))]
-
-                if action_4h == action_1d and action_4h in ['BUY', 'SELL']:
-                    vote_m2 = action_4h
-                elif action_4h in ['BUY', 'SELL']:
-                    vote_m2 = action_4h
-
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # VOTE 3: Model 3 (Market GPT 1,000 Path Simulator)
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            vote_m3 = 'HOLD'
-            win_prob = 0.50
-            loss_prob = 0.50
-            if self.model_gpt is not None and raw_matrix is not None:
-                sim_res = MarketGPTWorldModel.simulate_future_paths(self.model_gpt, raw_matrix, n_simulations=500)
-                win_prob = float(sim_res.get('win_probability', 0.5))
-                loss_prob = float(sim_res.get('loss_probability', 0.5))
-
-                if win_prob >= 0.55:
-                    vote_m3 = 'BUY'
-                elif loss_prob >= 0.55:
-                    vote_m3 = 'SELL'
-
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # TALLY VOTES & DIAGNOSTIC LOGGING
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            votes = [vote_m1, vote_m2, vote_m3]
-            buy_votes = votes.count('BUY')
-            sell_votes = votes.count('SELL')
-
-            # Log diagnostic vote breakdown for every symbol!
-            self.logger.info(
-                f"📊 3-AI Vote Scan [{symbol}]: "
-                f"Model1={vote_m1} ({pred_4h:+.2%}) | "
-                f"Model2={vote_m2} | "
-                f"Model3={vote_m3} (WinProb: {win_prob:.1%})"
-            )
-
-            # Determine Majority Action (Requires 2 or 3 votes)
-            if buy_votes >= 2:
-                final_action = 'BUY'
-                vote_count = buy_votes
-            elif sell_votes >= 2:
-                final_action = 'SELL'
-                vote_count = sell_votes
-            else:
-                self.logger.info(f"⏭️ Skipping {symbol}: No 2/3 Majority Consensus (Votes: M1={vote_m1}, M2={vote_m2}, M3={vote_m3})")
+            """Generate high-conviction signal using 2-out-of-3 or 3-out-of-3 AI Majority Voting Ensemble"""
+            if not self.model_loaded:
                 return None
 
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # APPROVED SIGNAL SETUP
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            atr = float(current_data['atr14'].iloc[-1]) if 'atr14' in current_data.columns else current_price * 0.01
-            sl_mult = float(self.config['trading']['risk']['atr_multiplier_sl'])
-            tp_mult = float(self.config['trading']['risk']['atr_multiplier_tp'])
+            try:
+                # Prepare Data Inputs
+                seq_tensor, raw_matrix = self.prepare_regression_sequence(current_data)
+                smart_features = self.prepare_smart_trader_features(current_data)
 
-            if final_action == 'BUY':
-                stop_loss = current_price - (sl_mult * atr)
-                tp1 = current_price + (tp_mult * atr * 0.7)
-                tp2 = current_price + (tp_mult * atr)
-            else:
-                stop_loss = current_price + (sl_mult * atr)
-                tp1 = current_price - (tp_mult * atr * 0.7)
-                tp2 = current_price - (tp_mult * atr)
+                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                # VOTE 1: Model 1 (Continuous Return Regression AI)
+                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                vote_m1 = 'HOLD'
+                pred_1h, pred_4h, pred_12h = 0.0, 0.0, 0.0
+                min_thresh = getattr(self.settings, 'MIN_EXPECTED_RETURN_THRESHOLD', 0.005)  # 0.7%
 
-            confidence = max(0.55, win_prob) if vote_m3 != 'HOLD' else 0.60
-            strength = min(abs(pred_4h) * 15.0, 1.0) if vote_m1 != 'HOLD' else 0.50
+                if self.model_reg is not None and seq_tensor is not None:
+                    preds_reg = self.model_reg.predict(seq_tensor, verbose=0)
+                    pred_1h = float(preds_reg[0][0][0])
+                    pred_4h = float(preds_reg[1][0][0])
+                    pred_12h = float(preds_reg[2][0][0])
 
-            signal = {
-                'timestamp': datetime.now().isoformat() + 'Z',
-                'symbol': symbol,
-                'action': final_action,
-                'price': float(current_price),
-                'confidence': float(confidence),
-                'signal_strength': float(strength),
-                'direction_1h': vote_m1 if vote_m1 != 'HOLD' else final_action,
-                'direction_4h': vote_m2 if vote_m2 != 'HOLD' else final_action,
-                'direction_1d': final_action,
-                'risk_level': risk_level,
-                'market_regime': market_regime,
-                'votes': {
-                    'model_1_regression': vote_m1,
-                    'model_2_smart_trader': vote_m2,
-                    'model_3_market_gpt': vote_m3,
-                    'majority_votes': f"{vote_count}/3"
-                },
-                'expected_returns': {
-                    '1h_return': f"{pred_1h:+.2%}",
-                    '4h_return': f"{pred_4h:+.2%}",
-                    '12h_return': f"{pred_12h:+.2%}"
-                },
-                'market_gpt_simulation': {
-                    'win_probability': f"{win_prob:.1%}",
-                    'loss_probability': f"{loss_prob:.1%}"
-                },
-                'strategy': {
-                    'stop_loss': float(stop_loss),
-                    'take_profit_1': float(tp1),
-                    'take_profit_2': float(tp2),
-                    'atr_used': float(atr),
-                    'max_holding_hours': self.config['trading']['risk']['max_holding_hours']
-                },
-                'analysis': {
-                    'summary': f"2-out-of-3 Majority ({vote_count}/3) Approved {final_action} on {symbol}",
-                    'signal_type': 'STRONG_TREND',
-                    'detected_pattern': 'MAJORITY_VOTING_CONSENSUS'
-                },
-                'outcome': 'OPEN',
-                'pnl_percentage': None,
-                'signal_id': f"{symbol}_{int(datetime.now().timestamp())}"
-            }
+                    if pred_4h >= min_thresh and pred_1h > 0:
+                        vote_m1 = 'BUY'
+                    elif pred_4h <= -min_thresh and pred_1h < 0:
+                        vote_m1 = 'SELL'
 
-            self.logger.info(
-                f"🎯 2-OUT-OF-3 MAJORITY APPROVED {symbol}: {final_action} (Votes: {vote_count}/3) | "
-                f"M1={vote_m1}, M2={vote_m2}, M3={vote_m3}"
-            )
+                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                # VOTE 2: Model 2 (6-Head Smart Trader AI)
+                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                vote_m2 = 'HOLD'
+                action_1h, action_4h, action_1d = 'HOLD', 'HOLD', 'HOLD'
+                risk_level, market_regime = 'MEDIUM', 'TRENDING'
 
-            if self.history_manager:
-                self.history_manager.save_signal(signal, outcome="OPEN")
+                if self.model_smart is not None and smart_features is not None:
+                    preds_smart = self.model_smart.predict(smart_features, verbose=0)
+                    action_1h = self.direction_map[int(np.argmax(preds_smart[0][0]))]
+                    action_4h = self.direction_map[int(np.argmax(preds_smart[1][0]))]
+                    action_1d = self.direction_map[int(np.argmax(preds_smart[2][0]))]
+                    risk_level = self.risk_map[int(np.argmax(preds_smart[4][0]))]
+                    market_regime = self.regime_map[int(np.argmax(preds_smart[5][0]))]
 
-            return signal
+                    if action_4h == action_1d and action_4h in ['BUY', 'SELL']:
+                        vote_m2 = action_4h
+                    elif action_4h in ['BUY', 'SELL']:
+                        vote_m2 = action_4h
 
-        except Exception as e:
-            self.logger.error(f"Error generating 2/3 voting signal for {symbol}: {e}", exc_info=True)
-            return None
+                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                # VOTE 3: Model 3 (Market GPT 1,000 Path Simulator)
+                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                vote_m3 = 'HOLD'
+                raw_win_prob = 0.50
+                raw_loss_prob = 0.50
+
+                if self.model_gpt is not None and raw_matrix is not None:
+                    sim_res = MarketGPTWorldModel.simulate_future_paths(self.model_gpt, raw_matrix, n_simulations=500)
+                    raw_win_prob = float(sim_res.get('win_probability', 0.5))
+                    raw_loss_prob = float(sim_res.get('loss_probability', 0.5))
+
+                    if raw_win_prob >= 0.55:
+                        vote_m3 = 'BUY'
+                    elif raw_loss_prob >= 0.55:
+                        vote_m3 = 'SELL'
+
+                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                # TALLY VOTES & DETERMINATION
+                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                votes = [vote_m1, vote_m2, vote_m3]
+                buy_votes = votes.count('BUY')
+                sell_votes = votes.count('SELL')
+
+                # Log diagnostic vote breakdown for every symbol
+                self.logger.info(
+                    f"📊 3-AI Vote Scan [{symbol}]: "
+                    f"Model1={vote_m1} ({pred_4h:+.2%}) | "
+                    f"Model2={vote_m2} | "
+                    f"Model3={vote_m3} (WinProb: {raw_win_prob:.1%}, LossProb: {raw_loss_prob:.1%})"
+                )
+
+                if buy_votes >= 2:
+                    final_action = 'BUY'
+                    vote_count = buy_votes
+                elif sell_votes >= 2:
+                    final_action = 'SELL'
+                    vote_count = sell_votes
+                else:
+                    self.logger.info(f"⏭️ Skipping {symbol}: No 2/3 Majority Consensus (Votes: M1={vote_m1}, M2={vote_m2}, M3={vote_m3})")
+                    return None
+
+                # FIX: Calculate true Win Probability for the chosen direction!
+                # For BUY trades, win_prob = raw_win_prob (chance of price going UP)
+                # For SELL trades, win_prob = raw_loss_prob (chance of price going DOWN)
+                if final_action == 'BUY':
+                    actual_win_prob = raw_win_prob
+                else:
+                    actual_win_prob = raw_loss_prob
+
+                # Status description: 3/3 UNANIMOUS vs 2/3 MAJORITY
+                consensus_tag = "3/3 UNANIMOUS APPROVED" if vote_count == 3 else "2/3 MAJORITY APPROVED"
+
+                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                # STRATEGY RISK & LEVERAGE LEVELS
+                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                atr = float(current_data['atr14'].iloc[-1]) if 'atr14' in current_data.columns else current_price * 0.01
+                sl_mult = float(self.config['trading']['risk']['atr_multiplier_sl'])
+                tp_mult = float(self.config['trading']['risk']['atr_multiplier_tp'])
+
+                if final_action == 'BUY':
+                    stop_loss = current_price - (sl_mult * atr)
+                    tp1 = current_price + (tp_mult * atr * 0.7)
+                    tp2 = current_price + (tp_mult * atr)
+                else:
+                    stop_loss = current_price + (sl_mult * atr)
+                    tp1 = current_price - (tp_mult * atr * 0.7)
+                    tp2 = current_price - (tp_mult * atr)
+
+                confidence = max(0.55, actual_win_prob)
+                strength = min(abs(pred_4h) * 15.0, 1.0) if vote_m1 != 'HOLD' else 0.50
+
+                signal = {
+                    'timestamp': datetime.now().isoformat() + 'Z',
+                    'symbol': symbol,
+                    'action': final_action,
+                    'price': float(current_price),
+                    'confidence': float(confidence),
+                    'signal_strength': float(strength),
+                    'direction_1h': action_1h if action_1h != 'HOLD' else final_action,
+                    'direction_4h': action_4h if action_4h != 'HOLD' else final_action,
+                    'direction_1d': action_1d if action_1d != 'HOLD' else final_action,
+                    'risk_level': risk_level,
+                    'market_regime': market_regime,
+                    'votes': {
+                        'model_1_regression': vote_m1,
+                        'model_2_smart_trader': vote_m2,
+                        'model_3_market_gpt': vote_m3,
+                        'majority_votes': f"{vote_count}/3",
+                        'consensus_type': consensus_tag
+                    },
+                    'expected_returns': {
+                        '1h_return': f"{pred_1h:+.2%}",
+                        '4h_return': f"{pred_4h:+.2%}",
+                        '12h_return': f"{pred_12h:+.2%}"
+                    },
+                    'market_gpt_simulation': {
+                        'win_probability': f"{actual_win_prob:.1%}",
+                        'loss_probability': f"{(1.0 - actual_win_prob):.1%}"
+                    },
+                    'strategy': {
+                        'stop_loss': float(stop_loss),
+                        'take_profit_1': float(tp1),
+                        'take_profit_2': float(tp2),
+                        'atr_used': float(atr),
+                        'max_holding_hours': getattr(self.settings, 'MAX_HOLDING_HOURS', 8)
+                    },
+                    'analysis': {
+                        'summary': f"{consensus_tag} {final_action} on {symbol}. Expected 4H Return: {pred_4h:+.2%}",
+                        'signal_type': 'STRONG_TREND',
+                        'detected_pattern': f"AI_{vote_count}_OF_3_CONSENSUS"
+                    },
+                    'outcome': 'OPEN',
+                    'pnl_percentage': None,
+                    'signal_id': f"{symbol}_{int(datetime.now().timestamp())}"
+                }
+
+                self.logger.info(
+                    f"🎯 {consensus_tag} [{symbol}]: {final_action} (Votes: {vote_count}/3) | "
+                    f"M1={vote_m1}, M2={vote_m2}, M3={vote_m3} | WinProb: {actual_win_prob:.1%}"
+                )
+
+                if self.history_manager:
+                    self.history_manager.save_signal(signal, outcome="OPEN")
+
+                return signal
+
+            except Exception as e:
+                self.logger.error(f"Error generating voting signal for {symbol}: {e}", exc_info=True)
+                return None
 
     def update_performance_metrics(self, success: bool):
         self.performance_metrics['total_predictions'] += 1

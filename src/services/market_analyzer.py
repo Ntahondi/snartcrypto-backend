@@ -164,7 +164,7 @@ class MarketAnalyzer:
             try:
                 signal = await self.generate_signal(symbol)
                 if signal:
-                    self.logger.info(f"🚀 Initial Signal [{symbol}]: {signal['direction_1h']} (Conf: {signal['confidence']:.2f})")
+                    self.logger.info(f"🚀 Initial Signal [{symbol}]: {signal['action']} (Conf: {signal['confidence']:.2f})")
                 else:
                     self.logger.info(f"⏭️ No initial signal for {symbol}")
             except Exception as e:
@@ -258,47 +258,49 @@ class MarketAnalyzer:
                 self.logger.error(f"❌ Error in tick update for {symbol}: {e}")
 
     async def generate_signal(self, symbol: str) -> Optional[Dict]:
-        """Generate trading signal for a symbol using SignalGenerator"""
-        try:
-            current_data = self.market_data.get(symbol)
-            if current_data is None or len(current_data) < 50:
-                self.logger.warning(f"⚠️ Insufficient data for {symbol}")
+            """Generate trading signal for a symbol using SignalGenerator"""
+            try:
+                current_data = self.market_data.get(symbol)
+                if current_data is None or len(current_data) < 50:
+                    self.logger.warning(f"⚠️ Insufficient data for {symbol}")
+                    return None
+                    
+                current_data_clean = current_data.fillna(0).copy()
+                current_price = float(current_data_clean['close'].iloc[-1])
+                
+                if self.signal_generator:
+                    signal = await self.signal_generator.generate_signal(
+                        symbol, current_data_clean, current_price
+                    )
+                    
+                    if signal:
+                        self.performance_metrics['total_signals'] += 1
+                        self.performance_metrics['successful_signals'] += 1
+                        
+                        deriv_data = await self.fetch_current_derivatives(symbol)
+                        if deriv_data:
+                            signal['derivatives'] = {
+                                'funding_rate': deriv_data.get('funding_rate', 0),
+                                'open_interest': deriv_data.get('open_interest', 0),
+                                'open_interest_usd': deriv_data.get('open_interest_usd', 0),
+                            }
+
+                        # NOTE: Telegram broadcasting is handled by PortfolioManager.open_position()
+                        # to prevent duplicate messages!
+
+                        if hasattr(self, 'orderbook_monitor') and self.orderbook_monitor:
+                            ob_data = self.orderbook_monitor.get_imbalance(symbol)
+                            if ob_data:
+                                signal['orderbook'] = ob_data
+                        
+                        self.latest_signals[symbol] = signal
+                        return signal
+                        
                 return None
                 
-            current_data_clean = current_data.fillna(0).copy()
-            current_price = float(current_data_clean['close'].iloc[-1])
-            
-            if self.signal_generator:
-                signal = await self.signal_generator.generate_signal(
-                    symbol, current_data_clean, current_price
-                )
-                
-                if signal:
-                    self.performance_metrics['total_signals'] += 1
-                    self.performance_metrics['successful_signals'] += 1
-                    
-                    deriv_data = await self.fetch_current_derivatives(symbol)
-                    if deriv_data:
-                        signal['derivatives'] = {
-                            'funding_rate': deriv_data.get('funding_rate', 0),
-                            'open_interest': deriv_data.get('open_interest', 0),
-                            'open_interest_usd': deriv_data.get('open_interest_usd', 0),
-                        }
-                    if getattr(self.telegram_service, 'enable_telegram', False):
-                        asyncio.create_task(self.telegram_service.broadcast_signal(signal))
-                    if hasattr(self, 'orderbook_monitor') and self.orderbook_monitor:
-                        ob_data = self.orderbook_monitor.get_imbalance(symbol)
-                        if ob_data:
-                            signal['orderbook'] = ob_data
-                    
-                    self.latest_signals[symbol] = signal
-                    return signal
-                    
-            return None
-            
-        except Exception as e:
-            self.logger.error(f"❌ Error generating signal for {symbol}: {e}", exc_info=True)
-            return None
+            except Exception as e:
+                self.logger.error(f"❌ Error generating signal for {symbol}: {e}", exc_info=True)
+                return None
 
     async def process_market_data(self, symbol: str, kline_data: Dict):
         """Process incoming CLOSED kline data and generate signal"""
