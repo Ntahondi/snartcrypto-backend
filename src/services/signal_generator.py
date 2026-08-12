@@ -1,9 +1,9 @@
 """
 Signal Generator for SmartCrypto AI v3.0.0
-3-Tier AI Ensemble System:
-  - Tier 1: Continuous Return Regression AI (Expected Return >= 1.0% Filter)
-  - Tier 2: 6-Head Smart Trader AI (Macro Trend & Risk Alignment Check)
-  - Tier 3: Market GPT World Model (1,000 Path Monte Carlo Probability Check)
+2-Out-Of-3 Majority Voting AI Ensemble:
+  - Model 1: Continuous Return Regression AI (Expected 4H Return)
+  - Model 2: 6-Head Smart Trader AI (Multi-Timeframe Trend & Risk)
+  - Model 3: Market GPT World Model (1,000 Path Monte Carlo Simulation)
 """
 
 import os
@@ -32,10 +32,11 @@ logger = SafeLogger.get_logger('SmartTradingSignalGenerator')
 
 class SignalGenerator:
     """
-    3-Tier AI Ensemble Signal Generator.
-    A trade is approved ONLY when Model 1, Model 2, and Model 3 agree.
+    2-Out-Of-3 Majority Voting AI Ensemble.
+    Executes a trade if at least 2 out of 3 AI models agree on BUY or SELL.
+    Logs diagnostic vote breakdowns for every symbol.
     """
-    
+
     def __init__(self, settings=None, config_path: str = "config.yaml"):
         self.logger = logger
         self.logger.setLevel(logging.INFO)
@@ -49,12 +50,10 @@ class SignalGenerator:
             self.config_path = config_path
             self.config = self.load_config(config_path)
         
-        # 3-Tier Models
-        self.model_reg = None     # Model 1: Regression AI
+        self.model_reg = None     # Model 1: Continuous Regression AI
         self.model_smart = None   # Model 2: 6-Head Smart Trader AI
         self.model_gpt = None     # Model 3: Market GPT World Model
         
-        # Scalers & Feature Columns
         self.scaler_reg = None
         self.features_reg = None
         self.scaler_smart = None
@@ -83,7 +82,6 @@ class SignalGenerator:
         self.load_models()
 
     def _init_from_settings(self):
-        """Initialize config from Settings object"""
         self.config = {
             'model': {
                 'path': getattr(self.settings, 'MODEL_SMART_PATH', 'models/smart_trader_ai_final.keras'),
@@ -136,7 +134,7 @@ class SignalGenerator:
         }
 
     def load_models(self):
-        """Load all 3 AI models into the ensemble pipeline"""
+        """Load all 3 AI models for the 2-out-of-3 voting ensemble"""
         try:
             custom_objects = {
                 'GlorotUniform': tf.keras.initializers.GlorotUniform,
@@ -144,7 +142,7 @@ class SignalGenerator:
                 'ResNetBlock1D': ResNetBlock1D
             }
 
-            # 1. Load Model 1: Continuous Regression AI
+            # 1. Model 1: Continuous Regression AI
             reg_path = "smartcrypto_ai_models/continuous_regression_ai.keras"
             reg_scaler_path = "smartcrypto_ai_models/unconstrained_scaler.joblib"
             reg_features_path = "smartcrypto_ai_models/unconstrained_features.joblib"
@@ -153,33 +151,31 @@ class SignalGenerator:
                 self.model_reg = tf.keras.models.load_model(reg_path, custom_objects=custom_objects, compile=False)
                 self.scaler_reg = joblib.load(reg_scaler_path) if os.path.exists(reg_scaler_path) else None
                 self.features_reg = joblib.load(reg_features_path) if os.path.exists(reg_features_path) else UnconstrainedCandleExtractor.get_feature_columns()
-                self.logger.info("✅ Tier 1 Model Loaded: Continuous Return Regression AI")
+                self.logger.info("✅ Model 1 Loaded: Continuous Return Regression AI")
 
-            # 2. Load Model 2: 6-Head Smart Trader AI
+            # 2. Model 2: 6-Head Smart Trader AI
             smart_path = "models/smart_trader_ai_final.keras"
             if os.path.exists(smart_path):
                 self.model_smart = tf.keras.models.load_model(smart_path, custom_objects=custom_objects, compile=False)
                 self.scaler_smart = joblib.load(self.config['model']['scaler'])
                 self.transformer_smart = joblib.load(self.config['model']['transformer'])
                 self.features_smart = joblib.load(self.config['model']['features'])
-                self.logger.info("✅ Tier 2 Model Loaded: 6-Head Smart Trader AI")
+                self.logger.info("✅ Model 2 Loaded: 6-Head Smart Trader AI")
 
-            # 3. Load Model 3: Market GPT World Model
+            # 3. Model 3: Market GPT World Model
             gpt_path = "smartcrypto_ai_models/market_gpt_world_model.keras"
             if os.path.exists(gpt_path):
                 self.model_gpt = tf.keras.models.load_model(gpt_path, compile=False)
-                self.logger.info("✅ Tier 3 Model Loaded: Market GPT World Model (1,000 Path Simulator)")
+                self.logger.info("✅ Model 3 Loaded: Market GPT World Model (1,000 Path Simulator)")
 
-            if self.model_reg is not None and self.model_smart is not None:
+            if self.model_reg is not None or self.model_smart is not None:
                 self.model_loaded = True
-                self.feature_columns = self.features_smart
+                self.feature_columns = getattr(self, 'features_smart', self.features_reg)
                 self.total_features = len(self.feature_columns)
-                self.logger.info("🚀 3-Tier AI Investment Committee Successfully Online!")
-            else:
-                self.logger.error("❌ Failed to load 3-Tier AI Ensemble Models")
+                self.logger.info("🚀 2-Out-Of-3 Voting AI Ensemble Successfully Online!")
 
         except Exception as e:
-            self.logger.error(f"❌ Error loading 3-Tier AI models: {e}", exc_info=True)
+            self.logger.error(f"❌ Error loading voting ensemble models: {e}", exc_info=True)
             self.model_loaded = False
 
     async def load_model(self):
@@ -188,7 +184,6 @@ class SignalGenerator:
         return self.model_loaded
 
     def prepare_regression_sequence(self, current_data: pd.DataFrame) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-        """Prepares a (1, 48, 21) sequence matrix for Regression AI & Market GPT"""
         try:
             if len(current_data) < 48:
                 return None, None
@@ -206,11 +201,10 @@ class SignalGenerator:
 
             return seq_tensor, raw_matrix
         except Exception as e:
-            self.logger.error(f"Error preparing 48h regression sequence: {e}")
+            self.logger.error(f"Error preparing 48h sequence: {e}")
             return None, None
 
     def prepare_smart_trader_features(self, current_data: pd.DataFrame) -> Optional[np.ndarray]:
-        """Prepares a (1, 58) feature vector for 6-Head Smart Trader AI"""
         try:
             data_clean = current_data.loc[:, ~current_data.columns.duplicated()].copy()
             for col in self.features_smart:
@@ -220,91 +214,110 @@ class SignalGenerator:
             features = data_clean[self.features_smart].fillna(0.0)
             scaled = self.scaler_smart.transform(features)
             transformed = self.transformer_smart.transform(scaled)
-            return transformed[-1:]  # Latest single candle row [1, 58]
+            return transformed[-1:]
         except Exception as e:
             self.logger.error(f"Error preparing Smart Trader features: {e}")
             return None
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # 3-TIER COMMITTEE SIGNAL EVALUATION
+    # 2-OUT-OF-3 MAJORITY VOTING EVALUATION
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     async def generate_signal(self, symbol: str, current_data: pd.DataFrame, current_price: float) -> Optional[Dict]:
-        """Generate high-conviction signal requiring 3-Tier Committee Unanimous Approval"""
+        """Generate high-conviction signal using 2-out-of-3 Majority Voting Ensemble"""
         if not self.model_loaded:
             return None
 
         try:
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # TIER 1: Continuous Return Regression AI (Move Magnitude >= 1.0%)
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # Prepare Data Inputs
             seq_tensor, raw_matrix = self.prepare_regression_sequence(current_data)
-            if seq_tensor is None:
-                return None
-
-            preds_reg = self.model_reg.predict(seq_tensor, verbose=0)
-            pred_1h = float(preds_reg[0][0][0])
-            pred_4h = float(preds_reg[1][0][0])
-            pred_12h = float(preds_reg[2][0][0])
-            min_return_thresh = getattr(self.settings, 'MIN_EXPECTED_RETURN_THRESHOLD', 0.007)  # 0.7%
-            # Log real-time AI return forecasts for complete visibility
-            self.logger.info(
-                f"📊 AI Scan [{symbol}]: Pred 1H={pred_1h:+.2%}, 4H={pred_4h:+.2%}, 12H={pred_12h:+.2%} "
-                f"(Thresh: ±{min_return_thresh:.1%})"
-            )
-            if pred_4h >= min_return_thresh and pred_1h > 0:
-                candidate_action = 'BUY'
-            elif pred_4h <= -min_return_thresh and pred_1h < 0:
-                candidate_action = 'SELL'
-            else:
-                return None  # Tier 1 Rejected: Predicted move below 1.0% threshold
-
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # TIER 2: 6-Head Smart Trader AI (Macro Trend & Risk Check)
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             smart_features = self.prepare_smart_trader_features(current_data)
-            if smart_features is None:
-                return None
-
-            preds_smart = self.model_smart.predict(smart_features, verbose=0)
-            action_1h = self.direction_map[np.argmax(preds_smart[0][0])]
-            action_4h = self.direction_map[np.argmax(preds_smart[1][0])]
-            action_1d = self.direction_map[np.argmax(preds_smart[2][0])]
-            confidence_smart = float(np.clip(preds_smart[3][0][0], 0, 1))
-            risk_level = self.risk_map[int(np.argmax(preds_smart[4][0]))]
-            market_regime = self.regime_map[int(np.argmax(preds_smart[5][0]))]
-
-            # Require agreement between Tier 1 action and Tier 2 4H/1D directions
-            if action_4h != candidate_action or action_1d != candidate_action:
-                self.logger.info(f"⏭️ Tier 2 Rejected {symbol}: Macro trends (4H={action_4h}, 1D={action_1d}) conflict with Tier 1 ({candidate_action})")
-                return None
-
-            if risk_level == "HIGH" and getattr(self.settings, 'RISK_TOLERANCE', 'MODERATE') == "CONSERVATIVE":
-                self.logger.info(f"⏭️ Tier 2 Rejected {symbol}: AI predicts HIGH risk level")
-                return None
 
             # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # TIER 3: Market GPT World Model (1,000 Path Monte Carlo)
+            # VOTE 1: Model 1 (Continuous Return Regression AI)
             # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            vote_m1 = 'HOLD'
+            pred_1h, pred_4h, pred_12h = 0.0, 0.0, 0.0
+            min_thresh = getattr(self.settings, 'MIN_EXPECTED_RETURN_THRESHOLD', 0.007)  # 0.7%
+
+            if self.model_reg is not None and seq_tensor is not None:
+                preds_reg = self.model_reg.predict(seq_tensor, verbose=0)
+                pred_1h = float(preds_reg[0][0][0])
+                pred_4h = float(preds_reg[1][0][0])
+                pred_12h = float(preds_reg[2][0][0])
+
+                if pred_4h >= min_thresh and pred_1h > 0:
+                    vote_m1 = 'BUY'
+                elif pred_4h <= -min_thresh and pred_1h < 0:
+                    vote_m1 = 'SELL'
+
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # VOTE 2: Model 2 (6-Head Smart Trader AI)
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            vote_m2 = 'HOLD'
+            risk_level, market_regime = 'MEDIUM', 'TRENDING'
+            if self.model_smart is not None and smart_features is not None:
+                preds_smart = self.model_smart.predict(smart_features, verbose=0)
+                action_4h = self.direction_map[np.argmax(preds_smart[1][0])]
+                action_1d = self.direction_map[np.argmax(preds_smart[2][0])]
+                risk_level = self.risk_map[int(np.argmax(preds_smart[4][0]))]
+                market_regime = self.regime_map[int(np.argmax(preds_smart[5][0]))]
+
+                if action_4h == action_1d and action_4h in ['BUY', 'SELL']:
+                    vote_m2 = action_4h
+                elif action_4h in ['BUY', 'SELL']:
+                    vote_m2 = action_4h
+
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # VOTE 3: Model 3 (Market GPT 1,000 Path Simulator)
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            vote_m3 = 'HOLD'
             win_prob = 0.50
             loss_prob = 0.50
-            if self.model_gpt is not None:
+            if self.model_gpt is not None and raw_matrix is not None:
                 sim_res = MarketGPTWorldModel.simulate_future_paths(self.model_gpt, raw_matrix, n_simulations=500)
                 win_prob = float(sim_res.get('win_probability', 0.5))
                 loss_prob = float(sim_res.get('loss_probability', 0.5))
 
-                if win_prob < 0.55:
-                    self.logger.info(f"⏭️ Tier 3 Rejected {symbol}: Monte Carlo Win Prob ({win_prob:.1%}) below 55%")
-                    return None
+                if win_prob >= 0.55:
+                    vote_m3 = 'BUY'
+                elif loss_prob >= 0.55:
+                    vote_m3 = 'SELL'
 
             # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # ✅ UNANIMOUS APPROVAL: Generate High-Conviction Signal
+            # TALLY VOTES & DIAGNOSTIC LOGGING
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            votes = [vote_m1, vote_m2, vote_m3]
+            buy_votes = votes.count('BUY')
+            sell_votes = votes.count('SELL')
+
+            # Log diagnostic vote breakdown for every symbol!
+            self.logger.info(
+                f"📊 3-AI Vote Scan [{symbol}]: "
+                f"Model1={vote_m1} ({pred_4h:+.2%}) | "
+                f"Model2={vote_m2} | "
+                f"Model3={vote_m3} (WinProb: {win_prob:.1%})"
+            )
+
+            # Determine Majority Action (Requires 2 or 3 votes)
+            if buy_votes >= 2:
+                final_action = 'BUY'
+                vote_count = buy_votes
+            elif sell_votes >= 2:
+                final_action = 'SELL'
+                vote_count = sell_votes
+            else:
+                self.logger.info(f"⏭️ Skipping {symbol}: No 2/3 Majority Consensus (Votes: M1={vote_m1}, M2={vote_m2}, M3={vote_m3})")
+                return None
+
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # APPROVED SIGNAL SETUP
             # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             atr = float(current_data['atr14'].iloc[-1]) if 'atr14' in current_data.columns else current_price * 0.01
             sl_mult = float(self.config['trading']['risk']['atr_multiplier_sl'])
             tp_mult = float(self.config['trading']['risk']['atr_multiplier_tp'])
 
-            if candidate_action == 'BUY':
+            if final_action == 'BUY':
                 stop_loss = current_price - (sl_mult * atr)
                 tp1 = current_price + (tp_mult * atr * 0.7)
                 tp2 = current_price + (tp_mult * atr)
@@ -313,20 +326,27 @@ class SignalGenerator:
                 tp1 = current_price - (tp_mult * atr * 0.7)
                 tp2 = current_price - (tp_mult * atr)
 
-            signal_strength = min(abs(pred_4h) * 15.0, 1.0)
+            confidence = max(0.55, win_prob) if vote_m3 != 'HOLD' else 0.60
+            strength = min(abs(pred_4h) * 15.0, 1.0) if vote_m1 != 'HOLD' else 0.50
 
             signal = {
                 'timestamp': datetime.now().isoformat() + 'Z',
                 'symbol': symbol,
-                'action': candidate_action,
+                'action': final_action,
                 'price': float(current_price),
-                'confidence': float(win_prob),
-                'signal_strength': float(signal_strength),
-                'direction_1h': action_1h,
-                'direction_4h': action_4h,
-                'direction_1d': action_1d,
+                'confidence': float(confidence),
+                'signal_strength': float(strength),
+                'direction_1h': vote_m1 if vote_m1 != 'HOLD' else final_action,
+                'direction_4h': vote_m2 if vote_m2 != 'HOLD' else final_action,
+                'direction_1d': final_action,
                 'risk_level': risk_level,
                 'market_regime': market_regime,
+                'votes': {
+                    'model_1_regression': vote_m1,
+                    'model_2_smart_trader': vote_m2,
+                    'model_3_market_gpt': vote_m3,
+                    'majority_votes': f"{vote_count}/3"
+                },
                 'expected_returns': {
                     '1h_return': f"{pred_1h:+.2%}",
                     '4h_return': f"{pred_4h:+.2%}",
@@ -341,12 +361,12 @@ class SignalGenerator:
                     'take_profit_1': float(tp1),
                     'take_profit_2': float(tp2),
                     'atr_used': float(atr),
-                    'max_holding_hours': self.config['trading']['risk']['max_holding_hours'],
+                    'max_holding_hours': self.config['trading']['risk']['max_holding_hours']
                 },
                 'analysis': {
-                    'summary': f"{candidate_action} signal approved by 3-Tier AI Committee. Expected 4H Return: {pred_4h:+.2%}",
+                    'summary': f"2-out-of-3 Majority ({vote_count}/3) Approved {final_action} on {symbol}",
                     'signal_type': 'STRONG_TREND',
-                    'detected_pattern': '3_TIER_COMMITTEE_UNANIMOUS'
+                    'detected_pattern': 'MAJORITY_VOTING_CONSENSUS'
                 },
                 'outcome': 'OPEN',
                 'pnl_percentage': None,
@@ -354,8 +374,8 @@ class SignalGenerator:
             }
 
             self.logger.info(
-                f"🎯 3-TIER COMMITTEE APPROVED {symbol}: {candidate_action} | "
-                f"Expected 4H Return: {pred_4h:+.2%} | Monte Carlo Win Prob: {win_prob:.1%}"
+                f"🎯 2-OUT-OF-3 MAJORITY APPROVED {symbol}: {final_action} (Votes: {vote_count}/3) | "
+                f"M1={vote_m1}, M2={vote_m2}, M3={vote_m3}"
             )
 
             if self.history_manager:
@@ -364,7 +384,7 @@ class SignalGenerator:
             return signal
 
         except Exception as e:
-            self.logger.error(f"Error generating 3-Tier signal for {symbol}: {e}", exc_info=True)
+            self.logger.error(f"Error generating 2/3 voting signal for {symbol}: {e}", exc_info=True)
             return None
 
     def update_performance_metrics(self, success: bool):
