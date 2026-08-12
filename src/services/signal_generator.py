@@ -341,7 +341,7 @@ class SignalGenerator:
                     tp2 = current_price - (tp_mult * atr)
 
                 confidence = max(0.55, actual_win_prob)
-                strength = min(abs(pred_4h) * 15.0, 1.0) if vote_m1 != 'HOLD' else 0.50
+                strength = min(actual_win_prob * 0.9 + abs(pred_4h) * 10.0, 1.0)
 
                 signal = {
                     'timestamp': datetime.now().isoformat() + 'Z',

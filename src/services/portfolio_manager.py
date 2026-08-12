@@ -279,8 +279,8 @@ class PortfolioManager:
             asyncio.create_task(self.trade_executor.execute_open_position(position))
         
         # Telegram Alert
-        if hasattr(self, 'telegram_service') and self.telegram_service and getattr(self.telegram_service, 'enable_telegram', False):
-            asyncio.create_task(self.telegram_service.broadcast_signal(signal))
+        #if hasattr(self, 'telegram_service') and self.telegram_service and getattr(self.telegram_service, 'enable_telegram', False):
+        #    asyncio.create_task(self.telegram_service.broadcast_signal(signal))
         
         logger.info(f"🎯 OPENED: {symbol} {action} | Size: ${pos_info['allocation_usd']:.2f} | Entry: ${position.entry_price:.4f}")
         return position

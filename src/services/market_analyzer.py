@@ -285,8 +285,9 @@ class MarketAnalyzer:
                                 'open_interest_usd': deriv_data.get('open_interest_usd', 0),
                             }
 
-                        # NOTE: Telegram broadcasting is handled by PortfolioManager.open_position()
-                        # to prevent duplicate messages!
+                        # Broadcast accepted VIP signal to Telegram Channel
+                        if getattr(self.telegram_service, 'enable_telegram', False):
+                            asyncio.create_task(self.telegram_service.broadcast_signal(signal))
 
                         if hasattr(self, 'orderbook_monitor') and self.orderbook_monitor:
                             ob_data = self.orderbook_monitor.get_imbalance(symbol)
