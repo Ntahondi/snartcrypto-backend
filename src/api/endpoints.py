@@ -14,9 +14,13 @@ import asyncio
 from src.core.config import Settings, get_settings
 from src.services.market_analyzer import MarketAnalyzer
 from src.utils.logger import get_logger
+from src.api.security import verify_api_key
 
+router = APIRouter(
+    prefix="/api/v1",
+    dependencies=[Depends(verify_api_key)]  # Protects ALL routes under /api/v1!
+)
 logger = get_logger(__name__)
-router = APIRouter()
 
 # Global market analyzer instance
 market_analyzer: Optional[MarketAnalyzer] = None

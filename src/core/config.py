@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     APP_NAME: str = "SmartCrypto"
     APP_VERSION: str = "3.0.0"
+    APP_API_KEY: str = Field("smartcrypto_live_secret_key_2026", env="APP_API_KEY")
     API_PREFIX: str = "/api/v1"
     DEBUG: bool = Field(False, env="DEBUG")
     

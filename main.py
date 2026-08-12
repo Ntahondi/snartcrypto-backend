@@ -177,7 +177,7 @@ async def lifespan(app: FastAPI):
 # CREATE FASTAPI APPLICATION
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 app = FastAPI(
-    title="SmartCrypto AI Trading API",
+    title="SnartCrypto AI Trading API",
     description="AI-Powered Cryptocurrency Trading with Derivatives, Order Book & Stationary Features",
     version="3.0.0",
     docs_url="/docs",
@@ -201,7 +201,7 @@ app.add_middleware(
 )
 
 # Include API routes
-app.include_router(api_router, prefix="/api/v1")
+app.include_router(api_router)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

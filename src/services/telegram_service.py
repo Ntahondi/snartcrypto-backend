@@ -101,7 +101,7 @@ class TelegramService:
             f"• Market Regime: <b>{signal.get('market_regime', 'TRENDING')}</b>\n\n"
             f"⏰ <b>Max Holding Time:</b> {max_hold} Hours\n\n"
             f"<i>⚠️ SmartCrypto AI Automated Signal • Manage your risk responsibly.</i>"
-        )
+        ) 
 
         success = await self._send_message(self.channel_id, message)
         if success:
