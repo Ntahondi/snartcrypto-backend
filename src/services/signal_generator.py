@@ -246,13 +246,12 @@ class SignalGenerator:
             pred_1h = float(preds_reg[0][0][0])
             pred_4h = float(preds_reg[1][0][0])
             pred_12h = float(preds_reg[2][0][0])
+            min_return_thresh = getattr(self.settings, 'MIN_EXPECTED_RETURN_THRESHOLD', 0.007)  # 0.7%
             # Log real-time AI return forecasts for complete visibility
             self.logger.info(
                 f"📊 AI Scan [{symbol}]: Pred 1H={pred_1h:+.2%}, 4H={pred_4h:+.2%}, 12H={pred_12h:+.2%} "
                 f"(Thresh: ±{min_return_thresh:.1%})"
             )
-            min_return_thresh = getattr(self.settings, 'MIN_EXPECTED_RETURN_THRESHOLD', 0.007)  # 0.7%
-
             if pred_4h >= min_return_thresh and pred_1h > 0:
                 candidate_action = 'BUY'
             elif pred_4h <= -min_return_thresh and pred_1h < 0:
