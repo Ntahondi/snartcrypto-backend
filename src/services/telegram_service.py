@@ -56,74 +56,76 @@ class TelegramService:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 1. VIP CHANNEL SIGNAL BROADCASTING
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
     async def broadcast_signal(self, signal: Dict) -> bool:
-        """Format and broadcast an accepted 3-Tier AI trading signal to VIP Channel"""
-        if not self.enable_telegram or not self.channel_id:
-            return False
+            """Format and broadcast an accepted 3-Tier AI trading signal with 1-Tap Copy Block"""
+            if not self.enable_telegram or not self.channel_id:
+                return False
 
-        symbol = signal.get('symbol', 'BTCUSDT').replace('USDT', '')
-        action = signal.get('action', 'BUY')
-        price = float(signal.get('price', 0.0))
-        confidence = float(signal.get('confidence', 0.5))
-        strength = float(signal.get('signal_strength', 0.5))
-        
-        strategy = signal.get('strategy', {})
-        stop_loss = float(strategy.get('stop_loss', 0.0))
-        tp1 = float(strategy.get('take_profit_1', 0.0))
-        tp2 = float(strategy.get('take_profit_2', 0.0))
-        max_hold = strategy.get('max_holding_hours', 8)
+            symbol = signal.get('symbol', 'BTCUSDT').replace('USDT', '')
+            action = signal.get('action', 'BUY')
+            price = float(signal.get('price', 0.0))
+            confidence = float(signal.get('confidence', 0.5))
+            strength = float(signal.get('signal_strength', 0.5))
+            
+            strategy = signal.get('strategy', {})
+            stop_loss = float(strategy.get('stop_loss', 0.0))
+            tp1 = float(strategy.get('take_profit_1', 0.0))
+            tp2 = float(strategy.get('take_profit_2', 0.0))
+            max_hold = strategy.get('max_holding_hours', 8)
 
-        direction_icon = "🟢 BUY (LONG)" if action == "BUY" else "🔴 SELL (SHORT)"
-        
-        sl_pct = abs((stop_loss - price) / price * 100) if price > 0 else 0
-        tp1_pct = abs((tp1 - price) / price * 100) if price > 0 else 0
-        tp2_pct = abs((tp2 - price) / price * 100) if price > 0 else 0
+            direction_icon = "🟢 BUY (LONG)" if action == "BUY" else "🔴 SELL (SHORT)"
+            
+            sl_pct = abs((stop_loss - price) / price * 100) if price > 0 else 0
+            tp1_pct = abs((tp1 - price) / price * 100) if price > 0 else 0
+            tp2_pct = abs((tp2 - price) / price * 100) if price > 0 else 0
 
-        expected_returns = signal.get('expected_returns', {})
-        gpt_sim = signal.get('market_gpt_simulation', {})
-        exp_4h = expected_returns.get('4h_return', 'N/A')
-        gpt_win_prob = gpt_sim.get('win_probability', f"{confidence:.1%}")
+            expected_returns = signal.get('expected_returns', {})
+            gpt_sim = signal.get('market_gpt_simulation', {})
+            exp_4h = expected_returns.get('4h_return', 'N/A')
+            
+            # Display the AI Win Probability for the trade direction
+            ai_win_prob = gpt_sim.get('win_probability', f"{confidence:.1%}")
 
-        message = (
-            f"<b>🚀 SNARTCRYPTO VIP SIGNAL</b>\n\n"
-            f"<b>📌 ASSET</b>\n"
-            f"├ <b>Symbol:</b> #{symbol}USDT\n"
-            f"├ <b>Direction:</b> {direction_icon}\n"
-            f"└ <b>Entry:</b> ${price:,.4f}\n\n"
-            f"<b>🎯 TAKE PROFIT TARGETS</b>\n"
-            f"├ TP1: ${tp1:,.4f}  (+{tp1_pct:.2f}%)\n"
-            f"└ TP2: ${tp2:,.4f}  (+{tp2_pct:.2f}%)\n\n"
-            f"<b>🛡️ STOP LOSS</b>\n"
-            f"└ ${stop_loss:,.4f}  (-{sl_pct:.2f}%)\n\n"
-            f"<b>📊 AI ENSEMBLE ANALYSIS</b>\n"
-            f"├ 4H Expected Return: {exp_4h}\n"
-            f"├ Win Probability: {gpt_win_prob}\n"
-            f"├ Signal Strength: {strength:.1%}\n"
-            f"├ Timeframes: 1H={signal.get('direction_1h')} • 4H={signal.get('direction_4h')} • 1D={signal.get('direction_1d')}\n"
-            f"├ Risk Level: {signal.get('risk_level', 'MEDIUM')}\n"
-            f"└ Market Regime: {signal.get('market_regime', 'TRENDING')}\n\n"
-            f"<b>⏰ MAX HOLDING TIME</b>\n"
-            f"└ {max_hold} Hours\n\n"
-            f"<i>⚠️ SnartCrypto Automated Signal • Manage your risk responsibly.</i>\n\n"
-            f"<pre>━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📋 COPY SIGNAL DETAILS\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"SYMBOL: #{symbol}USDT\n"
-            f"DIRECTION: {direction_icon}\n"
-            f"ENTRY: ${price:,.4f}\n"
-            f"TP1: ${tp1:,.4f} (+{tp1_pct:.2f}%)\n"
-            f"TP2: ${tp2:,.4f} (+{tp2_pct:.2f}%)\n"
-            f"SL: ${stop_loss:,.4f} (-{sl_pct:.2f}%)\n"
-            f"RISK: {signal.get('risk_level', 'MEDIUM')}\n"
-            f"REGIME: {signal.get('market_regime', 'TRENDING')}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</pre>"
-        )
+            # World-Class Institutional HTML Layout
+            message = (
+                f"<b>🚀 SNARTCRYPTO VIP SIGNAL</b>\n\n"
+                f"<b>📌 ASSET</b>\n"
+                f"├ <b>Symbol:</b> #{symbol}USDT\n"
+                f"├ <b>Direction:</b> {direction_icon}\n"
+                f"└ <b>Entry:</b> ${price:,.4f}\n\n"
+                f"<b>🎯 TAKE PROFIT TARGETS</b>\n"
+                f"├ TP1: ${tp1:,.4f}  (+{tp1_pct:.2f}%)\n"
+                f"└ TP2: ${tp2:,.4f}  (+{tp2_pct:.2f}%)\n\n"
+                f"<b>🛡️ STOP LOSS</b>\n"
+                f"└ ${stop_loss:,.4f}  (-{sl_pct:.2f}%)\n\n"
+                f"<b>📊 AI ENSEMBLE ANALYSIS</b>\n"
+                f"├ 4H Expected Return: <b>{exp_4h}</b>\n"
+                f"├ AI Win Probability: <b>{ai_win_prob} 🎯</b>\n"
+                f"├ Signal Strength: {strength:.1%}\n"
+                f"├ Timeframes: 1H={signal.get('direction_1h')} • 4H={signal.get('direction_4h')} • 1D={signal.get('direction_1d')}\n"
+                f"├ Risk Level: {signal.get('risk_level', 'MEDIUM')}\n"
+                f"└ Market Regime: {signal.get('market_regime', 'TRENDING')}\n\n"
+                f"<b>⏰ MAX HOLDING TIME</b>\n"
+                f"└ {max_hold} Hours\n\n"
+                f"<i>⚠️ SnartCrypto Automated Signal • Manage your risk responsibly.</i>\n\n"
+                f"<pre>━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📋 1-TAP COPY SIGNAL DETAILS\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"SYMBOL: #{symbol}USDT\n"
+                f"DIRECTION: {action}\n"
+                f"ENTRY: ${price:,.4f}\n"
+                f"TP1: ${tp1:,.4f} (+{tp1_pct:.2f}%)\n"
+                f"TP2: ${tp2:,.4f} (+{tp2_pct:.2f}%)\n"
+                f"SL: ${stop_loss:,.4f} (-{sl_pct:.2f}%)\n"
+                f"RISK: {signal.get('risk_level', 'MEDIUM')}\n"
+                f"REGIME: {signal.get('market_regime', 'TRENDING')}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</pre>"
+            )
 
-        success = await self._send_message(self.channel_id, message)
-        if success:
-            logger.info(f"📣 Broadcasted VIP Telegram Signal for #{symbol}USDT")
-        return success
+            success = await self._send_message(self.channel_id, message)
+            if success:
+                logger.info(f"📣 Broadcasted VIP Telegram Signal for #{symbol}USDT ({ai_win_prob} Win Prob)")
+            return success
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 2. CLOSED POSITION WIN / LOSS BANNERS
