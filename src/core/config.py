@@ -90,7 +90,7 @@ class Settings(BaseSettings):
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # SIGNAL QUALITY FILTERS ✅
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    MIN_EXPECTED_RETURN_THRESHOLD: float = Field(0.010, env="MIN_EXPECTED_RETURN_THRESHOLD")  # 1.0% High-Conviction Move
+    MIN_EXPECTED_RETURN_THRESHOLD: float = Field(0.007, env="MIN_EXPECTED_RETURN_THRESHOLD")  # 1.0% High-Conviction Move
     PERFORMANCE_THRESHOLD: float = Field(0.55, env="PERFORMANCE_THRESHOLD")
     CONFIDENCE_THRESHOLD: float = Field(0.50, env="CONFIDENCE_THRESHOLD")   
     MIN_CONFIDENCE: float = Field(0.40, env="MIN_CONFIDENCE")               
