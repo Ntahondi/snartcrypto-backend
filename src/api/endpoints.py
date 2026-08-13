@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
 import asyncio
+from fastapi.responses import HTMLResponse
 
 from src.core.config import Settings, get_settings
 from src.services.market_analyzer import MarketAnalyzer
@@ -847,6 +848,333 @@ async def test_signal_generation(
     except Exception as e:
         logger.error(f"Test signal generation failed for {symbol}: {e}")
         raise HTTPException(status_code=500, detail=f"Test failed: {str(e)}")
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# EMPIRICAL PAPER TEST ANALYTICS ENDPOINT
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@router.get("/analytics/paper-test")
+async def get_paper_test_analytics(
+    days: int = Query(7, ge=1, le=90, description="Days of trade history to analyze"),
+    analyzer: MarketAnalyzer = Depends(get_market_analyzer)
+):
+    """
+    Get empirical paper trading analytics broken down by:
+    - Symbol performance
+    - 3-AI Voting Consensus (3/3 Unanimous vs 2/3 Majority)
+    - Market Regime (TRENDING, RANGING, VOLATILE)
+    Protected by X-API-Key header.
+    """
+    try:
+        history_mgr = getattr(analyzer, 'history_manager', None)
+        if not history_mgr:
+            raise HTTPException(status_code=503, detail="HistoryManager not available")
+
+        # Query recent signals from storage/cache
+        signals = history_mgr.get_recent_signals(hours=days * 24, limit=5000, include_closed=True)
+        
+        closed_signals = [s for s in signals if s.get('outcome') in ['WIN', 'LOSS']]
+        open_signals = [s for s in signals if s.get('outcome') == 'OPEN']
+
+        if not closed_signals:
+            return {
+                "timestamp": datetime.now().isoformat() + 'Z',
+                "status": "accumulating_data",
+                "message": "Paper trading is active. Accumulating closed trades for analysis. Let the bot run longer!",
+                "total_signals_generated": len(signals),
+                "open_positions": len(open_signals)
+            }
+
+        total_closed = len(closed_signals)
+        winning_signals = [s for s in closed_signals if s.get('outcome') == 'WIN']
+        losing_signals = [s for s in closed_signals if s.get('outcome') == 'LOSS']
+        
+        overall_win_rate = len(winning_signals) / total_closed if total_closed > 0 else 0.0
+
+        pnls = [s.get('pnl_percentage', 0.0) for s in closed_signals if s.get('pnl_percentage') is not None]
+        total_pnl_pct = sum(pnls) if pnls else 0.0
+        avg_pnl_pct = total_pnl_pct / len(pnls) if pnls else 0.0
+
+        # 1. Performance by Symbol
+        by_symbol = {}
+        for s in closed_signals:
+            sym = s.get('symbol', 'UNKNOWN')
+            if sym not in by_symbol:
+                by_symbol[sym] = {'total': 0, 'wins': 0, 'pnl': 0.0}
+            by_symbol[sym]['total'] += 1
+            if s.get('outcome') == 'WIN':
+                by_symbol[sym]['wins'] += 1
+            by_symbol[sym]['pnl'] += (s.get('pnl_percentage') or 0.0)
+
+        symbol_report = {}
+        for sym, data in by_symbol.items():
+            tot = data['total']
+            symbol_report[sym] = {
+                'trades': tot,
+                'win_rate': f"{data['wins'] / tot:.1%}" if tot > 0 else "0.0%",
+                'total_pnl_pct': f"{data['pnl']:+.2f}%",
+                'avg_pnl_pct': f"{data['pnl'] / tot:+.2f}%" if tot > 0 else "0.00%"
+            }
+
+        # 2. Performance by AI Consensus Type (3/3 Unanimous vs 2/3 Majority)
+        by_consensus = {}
+        for s in closed_signals:
+            votes = s.get('votes', {})
+            tag = votes.get('tag', 'UNKNOWN')
+            if tag not in by_consensus:
+                by_consensus[tag] = {'total': 0, 'wins': 0, 'pnl': 0.0}
+            by_consensus[tag]['total'] += 1
+            if s.get('outcome') == 'WIN':
+                by_consensus[tag]['wins'] += 1
+            by_consensus[tag]['pnl'] += (s.get('pnl_percentage') or 0.0)
+
+        consensus_report = {}
+        for tag, data in by_consensus.items():
+            tot = data['total']
+            consensus_report[tag] = {
+                'trades': tot,
+                'win_rate': f"{data['wins'] / tot:.1%}" if tot > 0 else "0.0%",
+                'total_pnl_pct': f"{data['pnl']:+.2f}%"
+            }
+
+        # 3. Performance by Market Regime
+        by_regime = {}
+        for s in closed_signals:
+            regime = s.get('market_regime', 'UNKNOWN')
+            if regime not in by_regime:
+                by_regime[regime] = {'total': 0, 'wins': 0, 'pnl': 0.0}
+            by_regime[regime]['total'] += 1
+            if s.get('outcome') == 'WIN':
+                by_regime[regime]['wins'] += 1
+            by_regime[regime]['pnl'] += (s.get('pnl_percentage') or 0.0)
+
+        regime_report = {}
+        for regime, data in by_regime.items():
+            tot = data['total']
+            regime_report[regime] = {
+                'trades': tot,
+                'win_rate': f"{data['wins'] / tot:.1%}" if tot > 0 else "0.0%",
+                'total_pnl_pct': f"{data['pnl']:+.2f}%"
+            }
+
+        return {
+            "timestamp": datetime.now().isoformat() + 'Z',
+            "status": "success",
+            "timeframe_days": days,
+            "summary": {
+                "total_signals_generated": len(signals),
+                "open_positions": len(open_signals),
+                "total_closed_trades": total_closed,
+                "winning_trades": len(winning_signals),
+                "losing_trades": len(losing_signals),
+                "overall_win_rate": f"{overall_win_rate:.1%}",
+                "total_pnl_percentage": f"{total_pnl_pct:+.2f}%",
+                "average_trade_pnl": f"{avg_pnl_pct:+.2f}%",
+                "best_trade_pnl": f"{max(pnls):+.2f}%" if pnls else "0.00%",
+                "worst_trade_pnl": f"{min(pnls):+.2f}%" if pnls else "0.00%"
+            },
+            "performance_by_symbol": symbol_report,
+            "performance_by_consensus_votes": consensus_report,
+            "performance_by_market_regime": regime_report
+        }
+
+    except Exception as e:
+        logger.error(f"Error generating paper test analytics: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# VISUAL WEB DASHBOARD ANALYTICS ENDPOINT
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@router.get("/analytics/paper-test/dashboard", response_class=HTMLResponse)
+async def get_paper_test_visual_dashboard(
+    days: int = Query(7, ge=1, le=90, description="Days of trade history to analyze"),
+    analyzer: MarketAnalyzer = Depends(get_market_analyzer)
+):
+    """
+    Renders a modern, dark-mode visual web dashboard in your browser
+    showing complete 3-AI model vote breakdowns and trade outcomes.
+    """
+    try:
+        history_mgr = getattr(analyzer, 'history_manager', None)
+        if not history_mgr:
+            return HTMLResponse("<h1>HistoryManager not available</h1>", status_code=503)
+
+        signals = history_mgr.get_recent_signals(hours=days * 24, limit=5000, include_closed=True)
+        closed = [s for s in signals if s.get('outcome') in ['WIN', 'LOSS']]
+
+        # Generate HTML Table rows for each signal
+        rows_html = ""
+        for s in signals:
+            sym = s.get('symbol', 'N/A').replace('USDT', '')
+            act = s.get('action', 'HOLD')
+            out = s.get('outcome', 'OPEN')
+            pnl = s.get('pnl_percentage')
+            price = float(s.get('price', 0.0))
+            
+            pnl_str = f"{pnl:+.2f}%" if pnl is not None else "0.00%"
+            
+            act_color = "#00FF88" if act == "BUY" else ("#FF0055" if act == "SELL" else "#FFC107")
+            out_color = "#00FF88" if out == "WIN" else ("#FF0055" if out == "LOSS" else "#00E676")
+
+            # Extract detailed individual AI model votes
+            breakdown = s.get('ai_model_breakdown', {})
+            m1 = breakdown.get('model_1_regression', {})
+            m2 = breakdown.get('model_2_smart_trader', {})
+            m3 = breakdown.get('model_3_market_gpt', {})
+            consensus = breakdown.get('committee_consensus', {}).get('consensus_type', '2/3 MAJORITY')
+
+            m1_str = f"{m1.get('vote', 'N/A')} ({m1.get('pred_4h_return', '0%')})"
+            m2_str = f"{m2.get('vote', 'N/A')} (1H={m2.get('direction_1h', 'N/A')}, 4H={m2.get('direction_4h', 'N/A')})"
+            m3_str = f"{m3.get('vote', 'N/A')} (WinProb: {m3.get('trade_win_probability', '0%')})"
+
+            rows_html += f"""
+            <tr>
+                <td style="font-weight:bold;">#{sym}USDT</td>
+                <td style="color:{act_color}; font-weight:bold;">{act}</td>
+                <td><span class="badge">{consensus}</span></td>
+                <td>${price:,.4f}</td>
+                <td style="color:{out_color}; font-weight:bold;">{out}</td>
+                <td style="color:{out_color}; font-weight:bold;">{pnl_str}</td>
+                <td><code>{m1_str}</code></td>
+                <td><code>{m2_str}</code></td>
+                <td><code>{m3_str}</code></td>
+            </tr>
+            """
+
+        win_count = len([s for s in closed if s.get('outcome') == 'WIN'])
+        win_rate_str = f"{win_count / len(closed):.1%}" if len(closed) > 0 else "0.0%"
+        total_pnl_val = sum([s.get('pnl_percentage', 0.0) for s in closed if s.get('pnl_percentage') is not None])
+
+        # Modern Dark-Mode Glassmorphism HTML Template
+        html_content = f"""
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>SnartCrypto AI v3.0 - Live Model Audit Dashboard</title>
+            <style>
+                body {{
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                    background-color: #0d1117;
+                    color: #c9d1d9;
+                    margin: 0;
+                    padding: 30px;
+                }}
+                .header {{
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    margin-bottom: 30px;
+                    border-bottom: 1px solid #30363d;
+                    padding-bottom: 20px;
+                }}
+                h1 {{ color: #58a6ff; margin: 0; font-size: 26px; }}
+                .card-grid {{
+                    display: grid;
+                    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+                    gap: 20px;
+                    margin-bottom: 30px;
+                }}
+                .card {{
+                    background-color: #161b22;
+                    border: 1px solid #30363d;
+                    border-radius: 10px;
+                    padding: 20px;
+                }}
+                .card-title {{ color: #8b949e; font-size: 13px; text-transform: uppercase; margin-bottom: 8px; }}
+                .card-value {{ font-size: 28px; font-weight: bold; color: #f0f6fc; }}
+                table {{
+                    width: 100%;
+                    border-collapse: collapse;
+                    background-color: #161b22;
+                    border-radius: 10px;
+                    overflow: hidden;
+                    border: 1px solid #30363d;
+                }}
+                th, td {{
+                    padding: 14px 18px;
+                    text-align: left;
+                    border-bottom: 1px solid #30363d;
+                }}
+                th {{ background-color: #21262d; color: #8b949e; font-size: 12px; text-transform: uppercase; }}
+                tr:hover {{ background-color: #1c2128; }}
+                .badge {{
+                    background-color: #21262d;
+                    color: #58a6ff;
+                    padding: 4px 8px;
+                    border-radius: 6px;
+                    font-size: 11px;
+                    border: 1px solid #30363d;
+                }}
+                code {{
+                    background-color: #0d1117;
+                    padding: 4px 8px;
+                    border-radius: 4px;
+                    font-family: monospace;
+                    color: #e6edf3;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <div>
+                    <h1>🚀 SnartCrypto AI v3.0 - Live Model Audit Dashboard</h1>
+                    <p style="color:#8b949e; margin-top:5px;">Real-Time 3-AI Committee Vote Breakdown & Individual Model Metrics</p>
+                </div>
+                <div>
+                    <span class="badge">Period: Last {days} Days</span>
+                </div>
+            </div>
+
+            <div class="card-grid">
+                <div class="card">
+                    <div class="card-title">Total Signals</div>
+                    <div class="card-value">{len(signals)}</div>
+                </div>
+                <div class="card">
+                    <div class="card-title">Closed Trades</div>
+                    <div class="card-value">{len(closed)}</div>
+                </div>
+                <div class="card">
+                    <div class="card-title">Win Rate</div>
+                    <div class="card-value" style="color: #00FF88;">{win_rate_str}</div>
+                </div>
+                <div class="card">
+                    <div class="card-title">Total Net PnL</div>
+                    <div class="card-value" style="color: #00FF88;">+{total_pnl_val:.2f}%</div>
+                </div>
+            </div>
+
+            <h2>📋 Detailed Signal & Individual AI Vote Audit Log</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Action</th>
+                        <th>Consensus</th>
+                        <th>Entry Price</th>
+                        <th>Outcome</th>
+                        <th>PnL %</th>
+                        <th>Model 1 (Regression)</th>
+                        <th>Model 2 (Smart Trader)</th>
+                        <th>Model 3 (Market GPT)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {rows_html if rows_html else "<tr><td colspan='9' style='text-align:center;'>No signals generated yet. Let paper trading run!</td></tr>"}
+                </tbody>
+            </tbody>
+            </table>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=html_content, status_code=200)
+
+    except Exception as e:
+        logger.error(f"Error generating visual dashboard: {e}", exc_info=True)
+        return HTMLResponse(f"<h1>Error generating dashboard: {e}</h1>", status_code=500)
 
 @router.get("/ws/positions/updates")
 async def position_websocket_info():
