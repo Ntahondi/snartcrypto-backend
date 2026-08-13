@@ -1,6 +1,6 @@
 """
 Trading Profiles - Single source of truth for all trading configurations
-AI-Optimized for 58% - 75% Win-Rate Ensemble Models
+Includes 'test' profile for unrestricted empirical data collection.
 """
 
 from enum import Enum
@@ -15,6 +15,7 @@ class TradingStyle(str, Enum):
     DAY_TRADER = "day_trader"
     SWING = "swing"
     POSITION = "position"
+    TEST = "test"
 
 
 class RiskTolerance(str, Enum):
@@ -41,10 +42,10 @@ class TradingProfile:
     
     max_positions_per_symbol: int = 1
     max_total_positions: int = 10
-    position_size_pct: float = 0.08  # Base position size (8% of capital)
+    position_size_pct: float = 0.08
     max_holding_hours: int = 8
     
-    # AI Signal Filters (Calibrated for 58%+ Win-Rate Ensemble)
+    # AI Signal Filters
     min_confidence: float = 0.40  
     min_signal_strength: float = 0.35
     require_timeframe_alignment: bool = True
@@ -57,17 +58,17 @@ class TradingProfile:
     max_drawdown_pct: float = 0.20
     use_trailing_stop: bool = True
     
-    # Kelly Criterion (Optimized for 58% AI Win Rate)
+    # Kelly Criterion
     use_kelly_sizing: bool = True
-    kelly_fraction: float = 0.25  # 1/4 Fractional Kelly for safety
-    expected_win_rate: float = 0.58  # Verified 58% AI Win Rate
-    avg_win_loss_ratio: float = 2.0  # Target Risk-Reward (2:1)
+    kelly_fraction: float = 0.25
+    expected_win_rate: float = 0.58
+    avg_win_loss_ratio: float = 2.0
     
     # Execution
     allow_multiple_positions: bool = False
     auto_compound: bool = True
     max_daily_trades: int = 20
-    min_time_between_trades: int = 300  # Seconds (5 min)
+    min_time_between_trades: int = 300
     
     def to_dict(self) -> Dict:
         return {
@@ -98,20 +99,46 @@ class TradingProfile:
         }
     
     def calculate_kelly_optimal_position(self, win_rate: float = None) -> float:
-        """Calculate optimal position size using Kelly Criterion"""
         wr = win_rate or self.expected_win_rate
         b = self.avg_win_loss_ratio
-        
-        # Kelly formula: f* = (p * b - q) / b
         kelly = (wr * b - (1.0 - wr)) / b
-        
-        # Apply Fractional Kelly
         optimal = kelly * self.kelly_fraction
-        
         max_position = self.position_size_pct * 1.5
         min_position = self.position_size_pct * 0.4
-        
         return float(np.clip(optimal, min_position, max_position))
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# UNRESTRICTED PAPER TESTING PROFILE
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def get_profile_test() -> TradingProfile:
+    """Unrestricted Paper Testing Profile - Accepts all AI signals for empirical data collection"""
+    return TradingProfile(
+        trading_style=TradingStyle.TEST,
+        risk_tolerance=RiskTolerance.EXTREME,
+        signal_timeframe=SignalTimeframe.H1,
+        max_positions_per_symbol=50,       # Allows multiple paper trades per symbol
+        max_total_positions=200,           # High position cap
+        position_size_pct=0.02,            # Small 2% size per trade
+        max_holding_hours=8,               # 8h hold duration
+        min_confidence=0.35,               # Opens paper trade on all approved ensemble signals
+        min_signal_strength=0.30,
+        require_timeframe_alignment=False,
+        require_ensemble_agreement=False,
+        stop_loss_atr_mult=1.5,
+        take_profit_atr_mult=3.0,
+        max_daily_loss_pct=0.50,
+        max_drawdown_pct=0.50,
+        use_trailing_stop=True,
+        use_kelly_sizing=False,            # Fixed 2% sizing during data collection
+        expected_win_rate=0.58,
+        avg_win_loss_ratio=2.0,
+        allow_multiple_positions=True,     # ✅ Allows opening paper trades on every signal
+        auto_compound=True,
+        max_daily_trades=500,              # High trade limit
+        min_time_between_trades=0          # Zero cooldown
+    )
 
 
 def get_profile_scalper() -> TradingProfile:
@@ -234,7 +261,8 @@ PROFILES = {
     'scalper': get_profile_scalper,
     'day_trader': get_profile_day_trader,
     'swing': get_profile_swing,
-    'position': get_profile_position
+    'position': get_profile_position,
+    'test': get_profile_test
 }
 
 

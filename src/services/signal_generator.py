@@ -223,11 +223,12 @@ class SignalGenerator:
     # 2-OUT-OF-3 MAJORITY VOTING EVALUATION
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     async def generate_signal(self, symbol: str, current_data: pd.DataFrame, current_price: float) -> Optional[Dict]:
-            """Generate signal using 2/3 or 3/3 Majority Voting Ensemble with 100% transparent vote recording"""
+            """Generate high-conviction signal using 2-out-of-3 or 3-out-of-3 AI Majority Voting Ensemble"""
             if not self.model_loaded:
                 return None
 
             try:
+                # Prepare Data Inputs
                 seq_tensor, raw_matrix = self.prepare_regression_sequence(current_data)
                 smart_features = self.prepare_smart_trader_features(current_data)
 
@@ -304,10 +305,15 @@ class SignalGenerator:
                     return None
 
                 # Calculate true Win Probability for chosen direction
-                actual_win_prob = raw_win_prob if final_action == 'BUY' else raw_loss_prob
-                strength = min(actual_win_prob * 0.9 + abs(pred_4h) * 10.0, 1.0)
+                actual_win_prob = float(raw_win_prob if final_action == 'BUY' else raw_loss_prob)
 
-                # Strategy Levels
+                # ✅ DEFINE CONFIDENCE AND STRENGTH FIRST BEFORE DICTIONARY CREATION
+                confidence = float(max(0.55, actual_win_prob))
+                strength = float(min(actual_win_prob * 0.9 + abs(pred_4h) * 10.0, 1.0))
+
+                consensus_tag = "3/3 UNANIMOUS" if vote_count == 3 else "2/3 MAJORITY"
+
+                # Strategy SL/TP Levels
                 atr = float(current_data['atr14'].iloc[-1]) if 'atr14' in current_data.columns else current_price * 0.01
                 sl_mult = float(self.config['trading']['risk']['atr_multiplier_sl'])
                 tp_mult = float(self.config['trading']['risk']['atr_multiplier_tp'])
@@ -321,21 +327,44 @@ class SignalGenerator:
                     tp1 = current_price - (tp_mult * atr * 0.7)
                     tp2 = current_price - (tp_mult * atr)
 
-                consensus_tag = "3/3 UNANIMOUS" if vote_count == 3 else "2/3 MAJORITY"
-
                 signal = {
                     'timestamp': datetime.now().isoformat() + 'Z',
                     'symbol': symbol,
                     'action': final_action,
                     'price': float(current_price),
-                    'confidence': float(actual_win_prob),
+                    'confidence': float(confidence),
                     'signal_strength': float(strength),
-                    # Record EXACT raw outputs from Model 2
                     'direction_1h': action_1h,
                     'direction_4h': action_4h,
                     'direction_1d': action_1d,
                     'risk_level': risk_level,
                     'market_regime': market_regime,
+                    'ai_model_breakdown': {
+                        'model_1_regression': {
+                            'vote': vote_m1,
+                            'pred_1h_return': f"{pred_1h:+.2%}",
+                            'pred_4h_return': f"{pred_4h:+.2%}",
+                            'pred_12h_return': f"{pred_12h:+.2%}"
+                        },
+                        'model_2_smart_trader': {
+                            'vote': vote_m2,
+                            'direction_1h': action_1h,
+                            'direction_4h': action_4h,
+                            'direction_1d': action_1d,
+                            'risk_level': risk_level,
+                            'market_regime': market_regime
+                        },
+                        'model_3_market_gpt': {
+                            'vote': vote_m3,
+                            'trade_win_probability': f"{actual_win_prob:.1%}",
+                            'raw_long_win_prob': f"{raw_win_prob:.1%}",
+                            'raw_short_win_prob': f"{raw_loss_prob:.1%}"
+                        },
+                        'committee_consensus': {
+                            'majority_votes': f"{vote_count}/3",
+                            'consensus_type': consensus_tag
+                        }
+                    },
                     'votes': {
                         'model_1': vote_m1,
                         'model_2': vote_m2,
@@ -380,7 +409,7 @@ class SignalGenerator:
                 return signal
 
             except Exception as e:
-                self.logger.error(f"Error generating signal for {symbol}: {e}", exc_info=True)
+                self.logger.error(f"Error generating 2/3 voting signal for {symbol}: {e}", exc_info=True)
                 return None
 
     def update_performance_metrics(self, success: bool):
