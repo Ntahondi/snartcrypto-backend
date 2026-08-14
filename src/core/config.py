@@ -101,6 +101,7 @@ class Settings(BaseSettings):
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # TRADING & RISK SETTINGS
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    TRADING_PROFILE: str = Field("test", env="TRADING_PROFILE")
     INITIAL_CAPITAL: float = Field(10000.0, env="INITIAL_CAPITAL")
     COMMISSION_RATE: float = Field(0.001, env="COMMISSION_RATE")
     RISK_TOLERANCE: str = Field("MODERATE", env="RISK_TOLERANCE")
