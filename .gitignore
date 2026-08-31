@@ -1,22 +1,21 @@
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # SMARTCRYPTO AI v3.0.0 - PRODUCTION .gitignore
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 1. ENVIRONMENT & SECRETS (NEVER COMMIT API KEYS!)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ------------------------------------------------------------------------------
+# 1. ENVIRONMENT & SECRETS (NEVER COMMIT SENSITIVE KEYS)
+# ------------------------------------------------------------------------------
 .env
-.env.local
-.env.production
-.env.development
+.env.*
+!.env.example
 secrets/
 credentials/
 *.pem
 *.key
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 2. PYTHON VIRTUAL ENVIRONMENT & CACHE
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ------------------------------------------------------------------------------
+# 2. PYTHON VIRTUAL ENVIRONMENTS & COMPILATION CACHES
+# ------------------------------------------------------------------------------
 venv/
 .venv/
 env/
@@ -28,42 +27,93 @@ __pycache__/
 .coverage
 htmlcov/
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 3. TEMPORARY MODEL CHECKPOINTS & BACKUPS ONLY
-# (DO NOT IGNORE PRODUCTION .keras / .joblib FILES!)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-models/temp/
-models/backup/
-/tmp/
-/temp/
+# ------------------------------------------------------------------------------
+# 3. LARGE DATASETS & TRAINING DATA (DO NOT COMMIT RAW/PROCESSED DATA)
+# ------------------------------------------------------------------------------
+*.parquet
+*.csv
+data/raw/
+data/processed/
+data/model4/*.parquet
+data/model4/*.json
+data/model4/MODEL4_LEARNABILITY/
+data/model4/MODEL4_REGIME_CONDITIONAL_V1/
+data/model4/MODEL4_SELECTIVE_V1/
+data/model4/MODEL4_STRATEGY_CLASSIFIER_V2/
+data/model4/MODEL4_STRATEGY_LABELS_V1/
+data/model4/MODEL4_STRATEGY_LABELS_V2/
+data/model4/MODEL4_WALK_FORWARD/
+data/model4/MODEL4_STRATEGY_DETECTOR_V1/CONTROLLED_TEST_V1/
+data/model4/MODEL4_STRATEGY_DETECTOR_V1/*.parquet
+data/model4/MODEL4_STRATEGY_DETECTOR_V1/*.json
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 4. RUNTIME LOGS
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Keep only the runtime Model 4 package & individual models
+!data/model4/MODEL4_STRATEGY_DETECTOR_V1/MODEL4_STRATEGY_DETECTOR_V1_PACKAGE.joblib
+!data/model4/MODEL4_STRATEGY_DETECTOR_V1/models/*.joblib
+
+# ------------------------------------------------------------------------------
+# 4. LOCAL RUNTIME DATABASES & PERSISTENT RUNTIME STATE
+# (Databases are automatically initialized/mounted at runtime)
+# ------------------------------------------------------------------------------
+*.db
+*.sqlite
+*.sqlite3
+data/*.db
+data/*.sqlite
+data/smartcrypto.db
+portfolio.db
+signal_history/signals.db
+positions/trade_history.jsonl
+storage/
+
+# ------------------------------------------------------------------------------
+# 5. LOGS & TEST REPORTS
+# ------------------------------------------------------------------------------
 logs/
 *.log
 *.out
 *.err
+reports/
+artifacts/
+api_test_results.json
+smartcrypto_ai_models/regression_history.json
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 5. LOCAL RUNTIME DATABASES & TRADE LOGS
-# (Created automatically inside Docker volumes)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-positions/trade_history.jsonl
-portfolio.db
-signal_history/signals.db
+# ------------------------------------------------------------------------------
+# 6. TEMPORARY CHECKPOINTS & SCRATCH FOLDERS
+# ------------------------------------------------------------------------------
+models/temp/
+models/backup/
+scratch/
+/tmp/
+/temp/
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 6. IDE & SYSTEM FILES
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ------------------------------------------------------------------------------
+# 7. OFFLINE RESEARCH & TRAINING SCRIPTS (NON-RUNTIME)
+# ------------------------------------------------------------------------------
+batch_preprocess_crypto.py
+compare_all_models.py
+dataset_alignment_audit.py
+dataset_audit_v2.py
+evaluate_smart_trader_model.py
+inspect_dataset.py
+inspect_parquet.py
+quick_test.py
+sync_parquet.py
+test_api_endpoints.py
+test_classification_rescue.py
+test_ensemble_reliability.py
+train_all_paradigms.py
+smartcrypto_ai_models/train_regression_gbr.py
+scripts/
+tests/
+
+# ------------------------------------------------------------------------------
+# 8. IDE & SYSTEM FILES
+# ------------------------------------------------------------------------------
 .vscode/
 .idea/
 *.swp
 .DS_Store
 Thumbs.db
 Desktop.ini
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 7. DOCKER OVERRIDES
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 docker-compose.override.yml

@@ -76,13 +76,13 @@ async def lifespan(app: FastAPI):
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         if market_analyzer_instance.portfolio_manager is None:
             try:
-                from src.services.portfolio_manager import (
+                from src.core.trading_profiles import (
                     get_profile_day_trader, 
                     get_profile_scalper,
                     get_profile_swing,
                     get_profile_position,
-                    PortfolioManager
                 )
+                from src.services.portfolio_manager import PortfolioManager
                 
                 profile_name = getattr(settings, 'TRADING_PROFILE', 'day_trader')
                 
@@ -293,8 +293,9 @@ async def system_status():
         }
         
         if market_analyzer_instance.signal_generator:
-            if hasattr(market_analyzer_instance.signal_generator, 'feature_columns'):
-                features = market_analyzer_instance.signal_generator.feature_columns
+            sig_gen = market_analyzer_instance.signal_generator
+            if hasattr(sig_gen, 'feature_columns'):
+                features = sig_gen.feature_columns
                 signal_gen_status["features"] = {
                     "total": len(features),
                     "derivatives": len([f for f in features if any(x in f for x in ['funding', 'oi_'])]),
@@ -302,8 +303,16 @@ async def system_status():
                     "stationary": True
                 }
             
-            if hasattr(market_analyzer_instance.signal_generator, 'performance_metrics'):
-                perf = market_analyzer_instance.signal_generator.performance_metrics
+            if hasattr(sig_gen, 'model4_engine') and sig_gen.model4_engine:
+                signal_gen_status["model4_strategy_layer"] = {
+                    "loaded": sig_gen.model4_engine.is_loaded,
+                    "detectors_count": len(sig_gen.model4_engine.detectors),
+                    "detectors": list(sig_gen.model4_engine.detectors.keys()),
+                    "role": "Strategy Intelligence / Confirmation Layer"
+                }
+
+            if hasattr(sig_gen, 'performance_metrics'):
+                perf = sig_gen.performance_metrics
                 signal_gen_status["performance"] = {
                     "total_predictions": perf.get('total_predictions', 0),
                     "successful_predictions": perf.get('successful_predictions', 0)
@@ -374,10 +383,21 @@ async def portfolio_overview():
     if not market_analyzer_instance or not market_analyzer_instance.portfolio_manager:
         raise HTTPException(status_code=503, detail="Portfolio manager not available")
     
-    try:
-        return market_analyzer_instance.portfolio_manager.get_portfolio_model()
-    except AttributeError:
-        return {"error": "Portfolio manager methods not fully implemented"}
+    pm = market_analyzer_instance.portfolio_manager
+    if hasattr(pm, 'get_portfolio_model'):
+        try:
+            return pm.get_portfolio_model()
+        except Exception:
+            pass
+    if hasattr(pm, 'get_summary'):
+        return pm.get_summary()
+    if hasattr(pm, 'get_portfolio_value'):
+        return {
+            "portfolio_value": pm.get_portfolio_value(),
+            "available_capital": getattr(pm, 'available_capital', 0.0),
+            "open_positions": len(getattr(pm, 'open_positions', {})),
+        }
+    return {"error": "Portfolio manager methods not fully implemented"}
 
 
 @app.get("/api/v1/portfolio/positions")
@@ -387,10 +407,20 @@ async def portfolio_positions():
     if not market_analyzer_instance or not market_analyzer_instance.portfolio_manager:
         raise HTTPException(status_code=503, detail="Portfolio manager not available")
     
-    try:
-        return market_analyzer_instance.portfolio_manager.get_positions_model()
-    except AttributeError:
-        return {"error": "Portfolio manager methods not fully implemented"}
+    pm = market_analyzer_instance.portfolio_manager
+    if hasattr(pm, 'get_positions_model'):
+        try:
+            return pm.get_positions_model()
+        except Exception:
+            pass
+    if hasattr(pm, 'get_positions'):
+        return pm.get_positions()
+    if hasattr(pm, 'open_positions'):
+        return [
+            p if isinstance(p, dict) else (p.__dict__ if hasattr(p, '__dict__') else str(p))
+            for p in pm.open_positions.values()
+        ]
+    return []
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

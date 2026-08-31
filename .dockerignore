@@ -1,25 +1,119 @@
-# Virtual Environments
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# SMARTCRYPTO AI v3.0.0 - PRODUCTION .dockerignore
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# ------------------------------------------------------------------------------
+# 1. PYTHON VIRTUAL ENVIRONMENTS & COMPILATION CACHES
+# ------------------------------------------------------------------------------
 venv/
 .venv/
 env/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
 
-# Git
+# ------------------------------------------------------------------------------
+# 2. GIT REPOSITORY
+# ------------------------------------------------------------------------------
 .git/
 .gitignore
+.gitattributes
 
-# Python Cache
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.pytest_cache/
+# ------------------------------------------------------------------------------
+# 3. ENVIRONMENT & SECRETS (INJECTED VIA RUNTIME ENV / DOCKER COMPOSE)
+# ------------------------------------------------------------------------------
+.env
+.env.*
+secrets/
+credentials/
+*.pem
+*.key
 
-# IDE & OS Files
+# ------------------------------------------------------------------------------
+# 4. LARGE OFFLINE DATASETS & PARQUET FILES
+# ------------------------------------------------------------------------------
+*.parquet
+*.csv
+data/raw/
+data/processed/
+data/model4/*.parquet
+data/model4/*.json
+data/model4/MODEL4_LEARNABILITY/
+data/model4/MODEL4_REGIME_CONDITIONAL_V1/
+data/model4/MODEL4_SELECTIVE_V1/
+data/model4/MODEL4_STRATEGY_CLASSIFIER_V2/
+data/model4/MODEL4_STRATEGY_LABELS_V1/
+data/model4/MODEL4_STRATEGY_LABELS_V2/
+data/model4/MODEL4_WALK_FORWARD/
+data/model4/MODEL4_STRATEGY_DETECTOR_V1/CONTROLLED_TEST_V1/
+data/model4/MODEL4_STRATEGY_DETECTOR_V1/*.parquet
+data/model4/MODEL4_STRATEGY_DETECTOR_V1/*.json
+
+# ------------------------------------------------------------------------------
+# 5. LOCAL RUNTIME DATABASES & LOGS (MOUNTED VIA VOLUMES)
+# ------------------------------------------------------------------------------
+*.db
+*.sqlite
+*.sqlite3
+data/*.db
+data/*.sqlite
+data/smartcrypto.db
+portfolio.db
+signal_history/signals.db
+positions/trade_history.jsonl
+storage/
+logs/
+*.log
+*.out
+*.err
+
+# ------------------------------------------------------------------------------
+# 6. REPORTS, AUDITS & ARTIFACTS
+# ------------------------------------------------------------------------------
+reports/
+artifacts/
+api_test_results.json
+smartcrypto_ai_models/regression_history.json
+
+# ------------------------------------------------------------------------------
+# 7. TEMPORARY CHECKPOINTS & SCRATCH FOLDERS
+# ------------------------------------------------------------------------------
+models/temp/
+models/backup/
+scratch/
+/tmp/
+/temp/
+
+# ------------------------------------------------------------------------------
+# 8. OFFLINE RESEARCH & TRAINING SCRIPTS
+# ------------------------------------------------------------------------------
+batch_preprocess_crypto.py
+compare_all_models.py
+dataset_alignment_audit.py
+dataset_audit_v2.py
+evaluate_smart_trader_model.py
+inspect_dataset.py
+inspect_parquet.py
+quick_test.py
+sync_parquet.py
+test_api_endpoints.py
+test_classification_rescue.py
+test_ensemble_reliability.py
+train_all_paradigms.py
+smartcrypto_ai_models/train_regression_gbr.py
+scripts/
+tests/
+
+# ------------------------------------------------------------------------------
+# 9. IDE & OS FILES
+# ------------------------------------------------------------------------------
 .vscode/
 .idea/
+*.swp
 .DS_Store
 Thumbs.db
-
-# Temp Files
-models/temp/
-*.tmp
+Desktop.ini

@@ -9,14 +9,41 @@ logger = logging.getLogger(__name__)
 
 class UnconstrainedCandleExtractor:
     """
-    Extracts complete, unconstrained 30-channel dynamic market matrix
+    Extracts complete, unconstrained 23-channel dynamic market matrix
     combining multi-period returns, full candle anatomy, volume microstructure,
     and volatility expansion channels.
+    
+    FIXED:
+    - Per-symbol feature extraction (no cross-contamination)
+    - Fast list comprehension instead of groupby.apply
+    - Proper NaN handling per column type
     """
 
     @staticmethod
     def extract_features(df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
+        
+        # If single symbol or no symbol column
+        if 'symbol' not in df.columns:
+            return UnconstrainedCandleExtractor._extract_single_asset(df)
+        
+        # Process per symbol safely using list comprehension (faster than groupby.apply)
+        df = df.sort_values(['symbol', 'timestamp']).reset_index(drop=True)
+        
+        extracted = [
+            UnconstrainedCandleExtractor._extract_single_asset(group)
+            for _, group in df.groupby('symbol', sort=False)
+        ]
+        
+        return pd.concat(extracted, axis=0, ignore_index=True)
+
+    @staticmethod
+    def _extract_single_asset(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Extract features for a SINGLE symbol (or already filtered group).
+        All rolling calculations are now contained within one symbol.
+        """
+        df = df.copy().sort_values('timestamp').reset_index(drop=True)
 
         # Guarantee basic volume columns exist
         for col in ['quote_asset_volume', 'trades_count', 'taker_buy_quote_volume', 'taker_buy_base_volume']:
@@ -67,10 +94,10 @@ class UnconstrainedCandleExtractor:
         df['trade_count_ratio'] = df['trades_count'] / trade_sma20
 
         if (df['taker_buy_quote_volume'] > 0).any() and (df['quote_asset_volume'] > 0).any():
-            df['buy_pressure'] = df['taker_buy_quote_volume'] / (df['quote_asset_volume'] + 1e-8)
+            df['buy_pressure'] = (df['taker_buy_quote_volume'] / (df['quote_asset_volume'] + 1e-8)).clip(0, 1)
             df['order_imbalance'] = (
-                2.0 * df['taker_buy_quote_volume'] - df['quote_asset_volume']
-            ) / (df['quote_asset_volume'] + 1e-8)
+                (2.0 * df['taker_buy_quote_volume'] - df['quote_asset_volume']) / (df['quote_asset_volume'] + 1e-8)
+            ).clip(-1, 1)
         else:
             df['buy_pressure'] = 0.5
             df['order_imbalance'] = 0.0
@@ -95,16 +122,28 @@ class UnconstrainedCandleExtractor:
             df['day_sin'] = 0.0
             df['day_cos'] = 0.0
 
-        df = df.replace([np.inf, -np.inf], np.nan).ffill().fillna(0.0)
+        # Handle NaN/Inf properly per column
+        df = df.replace([np.inf, -np.inf], np.nan)
+        
+        # Specific fill strategies per column
+        for col in df.columns:
+            if col not in ['symbol', 'timestamp', 'open', 'high', 'low', 'close', 'volume']:
+                if col in ['buy_pressure']:
+                    df[col] = df[col].fillna(0.5)  # Neutral
+                elif col in ['candle_dir']:
+                    df[col] = df[col].fillna(0)  # Neutral
+                else:
+                    df[col] = df[col].fillna(0.0)
+        
         return df
 
     @staticmethod
     def get_feature_columns() -> list:
-        """Returns full unconstrained 21-channel feature list"""
+        """Returns full unconstrained 23-channel feature list"""
         return [
             'ret_1', 'ret_2', 'ret_3', 'ret_6', 'ret_12', 'ret_24', 'ret_48',
             'body_ratio', 'upper_wick_ratio', 'lower_wick_ratio', 'candle_dir',
             'bar_expansion_ratio', 'atr_ratio', 'volume_force', 'trade_count_ratio',
             'buy_pressure', 'order_imbalance', 'price_zscore_20', 'price_zscore_50',
-            'hour_sin', 'hour_cos'
+            'hour_sin', 'hour_cos', 'day_sin', 'day_cos'
         ]

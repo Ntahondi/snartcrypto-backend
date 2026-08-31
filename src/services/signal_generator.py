@@ -20,11 +20,12 @@ import warnings
 warnings.filterwarnings('ignore')
 
 from src.services.history_manager import HistoryManager
+from src.services.model4_strategy_engine import Model4StrategyEngine
 from src.utils.safe_logger import SafeLogger
 from src.core.config import get_settings
 
 from smartcrypto_ai_models.candle_microstructure import UnconstrainedCandleExtractor
-from smartcrypto_ai_models.conv1d_attention_model import ResNetBlock1D
+from smartcrypto_ai_models.regression_model import ResNetBlock1D
 from smartcrypto_ai_models.generative_market_gpt import MarketGPTWorldModel
 
 logger = SafeLogger.get_logger('SmartTradingSignalGenerator')
@@ -32,14 +33,21 @@ logger = SafeLogger.get_logger('SmartTradingSignalGenerator')
 
 class SignalGenerator:
     """
-    2-Out-Of-3 Majority Voting AI Ensemble.
-    Executes a trade if at least 2 out of 3 AI models agree on BUY or SELL.
-    Logs diagnostic vote breakdowns for every symbol.
+    Layered AI Decision Committee & Strategy Intelligence Engine:
+      - 2-Out-Of-3 Majority Directional AI Ensemble:
+          * Model 1: Continuous Return Regression AI (Expected Returns)
+          * Model 2: 6-Head Smart Trader AI (Multi-Timeframe Trend, Risk & Regime)
+          * Model 3: Market GPT World Model (1,000-Path Monte Carlo Simulation)
+      - Model 4 Strategy Intelligence Layer:
+          * 9 Pattern & Setup Detectors (Momentum Reversal, MA Crossover, Heikin Ashi,
+            Swing Trading, Candlestick, Role Reversal, Bollinger Squeeze, Narrow Range, RSI-2)
+          * Strategy Bias, Agreement Score, and Confidence Modulation
     """
 
-    def __init__(self, settings=None, config_path: str = "config.yaml"):
+    def __init__(self, settings=None, config_path: str = "config.yaml", trading_profile: Optional[str] = None):
         self.logger = logger
         self.logger.setLevel(logging.INFO)
+        self.trading_profile = trading_profile
 
         if hasattr(settings, 'MODEL_PATH') and settings.MODEL_PATH:
             self.settings = settings
@@ -53,6 +61,7 @@ class SignalGenerator:
         self.model_reg = None     # Model 1: Continuous Regression AI
         self.model_smart = None   # Model 2: 6-Head Smart Trader AI
         self.model_gpt = None     # Model 3: Market GPT World Model
+        self.model4_engine = Model4StrategyEngine()  # Model 4: 9 Strategy Detectors
         
         self.scaler_reg = None
         self.features_reg = None
@@ -134,7 +143,7 @@ class SignalGenerator:
         }
 
     def load_models(self):
-        """Load all 3 AI models for the 2-out-of-3 voting ensemble"""
+        """Load all 3 directional AI models and Model 4 Strategy Detectors"""
         try:
             custom_objects = {
                 'GlorotUniform': tf.keras.initializers.GlorotUniform,
@@ -143,15 +152,31 @@ class SignalGenerator:
             }
 
             # 1. Model 1: Continuous Regression AI
+            pkg_path = "smartcrypto_ai_models/continuous_regression_ai_package.joblib"
             reg_path = "smartcrypto_ai_models/continuous_regression_ai.keras"
-            reg_scaler_path = "smartcrypto_ai_models/unconstrained_scaler.joblib"
-            reg_features_path = "smartcrypto_ai_models/unconstrained_features.joblib"
+            reg_scaler_path = "smartcrypto_ai_models/regression_scaler.joblib" if os.path.exists("smartcrypto_ai_models/regression_scaler.joblib") else "smartcrypto_ai_models/unconstrained_scaler.joblib"
+            reg_target_scaler_path = "smartcrypto_ai_models/regression_target_scaler.joblib"
+            reg_features_path = "smartcrypto_ai_models/regression_features.joblib" if os.path.exists("smartcrypto_ai_models/regression_features.joblib") else "smartcrypto_ai_models/unconstrained_features.joblib"
 
-            if os.path.exists(reg_path):
+            if os.path.exists(pkg_path):
+                self.model_reg_pkg = joblib.load(pkg_path)
+                self.model_reg_models = self.model_reg_pkg.get('models', {})
+                self.model_reg_features = self.model_reg_pkg.get('feature_columns', [])
+                self.model_reg = self.model_reg_models
+                self.features_reg = self.model_reg_features
+                self.logger.info("✅ Model 1 Loaded: Continuous Return Regression AI (GBR Multi-Horizon Engine)")
+            elif os.path.exists(reg_path):
+                self.model_reg_pkg = None
+                self.model_reg_models = None
                 self.model_reg = tf.keras.models.load_model(reg_path, custom_objects=custom_objects, compile=False)
                 self.scaler_reg = joblib.load(reg_scaler_path) if os.path.exists(reg_scaler_path) else None
+                self.target_scaler_reg = joblib.load(reg_target_scaler_path) if os.path.exists(reg_target_scaler_path) else None
                 self.features_reg = joblib.load(reg_features_path) if os.path.exists(reg_features_path) else UnconstrainedCandleExtractor.get_feature_columns()
                 self.logger.info("✅ Model 1 Loaded: Continuous Return Regression AI")
+            else:
+                self.model_reg_pkg = None
+                self.model_reg_models = None
+                self.target_scaler_reg = None
 
             # 2. Model 2: 6-Head Smart Trader AI
             smart_path = "models/smart_trader_ai_final.keras"
@@ -164,15 +189,28 @@ class SignalGenerator:
 
             # 3. Model 3: Market GPT World Model
             gpt_path = "smartcrypto_ai_models/market_gpt_world_model.keras"
+            gpt_scaler_path = "smartcrypto_ai_models/market_gpt_scaler.joblib"
+            gpt_features_path = "smartcrypto_ai_models/market_gpt_features.joblib"
             if os.path.exists(gpt_path):
                 self.model_gpt = tf.keras.models.load_model(gpt_path, compile=False)
+                self.scaler_gpt = joblib.load(gpt_scaler_path) if os.path.exists(gpt_scaler_path) else None
+                self.features_gpt = joblib.load(gpt_features_path) if os.path.exists(gpt_features_path) else UnconstrainedCandleExtractor.get_feature_columns()
                 self.logger.info("✅ Model 3 Loaded: Market GPT World Model (1,000 Path Simulator)")
+            else:
+                self.scaler_gpt = None
+                self.features_gpt = UnconstrainedCandleExtractor.get_feature_columns()
+
+            # 4. Model 4: Strategy Intelligence Engine
+            if not self.model4_engine.is_loaded:
+                self.model4_engine._load_detectors()
+            if self.model4_engine.is_loaded:
+                self.logger.info(f"✅ Model 4 Loaded: {len(self.model4_engine.detectors)} Strategy Detectors Active")
 
             if self.model_reg is not None or self.model_smart is not None:
                 self.model_loaded = True
                 self.feature_columns = getattr(self, 'features_smart', self.features_reg)
                 self.total_features = len(self.feature_columns)
-                self.logger.info("🚀 2-Out-Of-3 Voting AI Ensemble Successfully Online!")
+                self.logger.info("🚀 AI Committee & Model 4 Strategy Engine Successfully Online!")
 
         except Exception as e:
             self.logger.error(f"❌ Error loading voting ensemble models: {e}", exc_info=True)
@@ -182,6 +220,29 @@ class SignalGenerator:
         if not self.model_loaded:
             self.load_models()
         return self.model_loaded
+
+    def prepare_market_gpt_sequence(self, current_data: pd.DataFrame) -> Optional[np.ndarray]:
+        try:
+            if len(current_data) < 48:
+                return None
+
+            extractor = UnconstrainedCandleExtractor()
+            df_featured = extractor.extract_features(current_data)
+            df_48h = df_featured.tail(48).reset_index(drop=True)
+
+            if len(df_48h) < 48:
+                return None
+
+            feat_cols = getattr(self, 'features_gpt', extractor.get_feature_columns())
+            for c in feat_cols:
+                if c not in df_48h.columns:
+                    df_48h[c] = 0.0
+
+            raw_matrix = df_48h[feat_cols].fillna(0.0).values
+            return raw_matrix
+        except Exception as e:
+            self.logger.error(f"Error preparing Market GPT sequence: {e}")
+            return None
 
     def prepare_regression_sequence(self, current_data: pd.DataFrame) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         try:
@@ -220,16 +281,21 @@ class SignalGenerator:
             return None
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # 2-OUT-OF-3 MAJORITY VOTING EVALUATION
+    # 2-OUT-OF-3 MAJORITY VOTING + MODEL 4 EVALUATION
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     async def generate_signal(self, symbol: str, current_data: pd.DataFrame, current_price: float) -> Optional[Dict]:
-            """Generate high-conviction signal using 2-out-of-3 or 3-out-of-3 AI Majority Voting Ensemble"""
+            """
+            Generate high-conviction trade signal combining:
+              1. 2-Out-Of-3 Majority Voting Directional Decision (Models 1, 2, and 3)
+              2. Model 4 Strategy Intelligence Layer (9 ML Pattern Detectors)
+            """
             if not self.model_loaded:
                 return None
 
             try:
                 # Prepare Data Inputs
                 seq_tensor, raw_matrix = self.prepare_regression_sequence(current_data)
+                gpt_matrix = self.prepare_market_gpt_sequence(current_data)
                 smart_features = self.prepare_smart_trader_features(current_data)
 
                 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -239,11 +305,33 @@ class SignalGenerator:
                 pred_1h, pred_4h, pred_12h = 0.0, 0.0, 0.0
                 min_thresh = getattr(self.settings, 'MIN_EXPECTED_RETURN_THRESHOLD', 0.005)  # 0.5%
 
-                if self.model_reg is not None and seq_tensor is not None:
+                if getattr(self, 'model_reg_models', None) is not None:
+                    # GBR Multi-Horizon Model Package
+                    feat_cols = self.model_reg_features
+                    data_clean = current_data.loc[:, ~current_data.columns.duplicated()].copy()
+                    X_row = np.array([[float(data_clean[col].iloc[-1]) if col in data_clean.columns else 0.0 for col in feat_cols]], dtype=np.float32)
+                    X_row = np.nan_to_num(X_row, nan=0.0, posinf=0.0, neginf=0.0)
+
+                    pred_1h = float(self.model_reg_models['1h'].predict(X_row)[0])
+                    pred_4h = float(self.model_reg_models['4h'].predict(X_row)[0])
+                    pred_12h = float(self.model_reg_models['12h'].predict(X_row)[0])
+
+                    if (pred_4h >= min_thresh or pred_12h >= min_thresh * 1.5) and pred_1h > 0:
+                        vote_m1 = 'BUY'
+                    elif (pred_4h <= -min_thresh or pred_12h <= -min_thresh * 1.5) and pred_1h < 0:
+                        vote_m1 = 'SELL'
+                elif self.model_reg is not None and seq_tensor is not None:
                     preds_reg = self.model_reg.predict(seq_tensor, verbose=0)
-                    pred_1h = float(preds_reg[0][0][0])
-                    pred_4h = float(preds_reg[1][0][0])
-                    pred_12h = float(preds_reg[2][0][0])
+                    p1_norm = float(preds_reg[0][0][0])
+                    p4_norm = float(preds_reg[1][0][0])
+                    p12_norm = float(preds_reg[2][0][0])
+
+                    if hasattr(self, 'target_scaler_reg') and self.target_scaler_reg:
+                        pred_1h = p1_norm * self.target_scaler_reg.get('1h', {}).get('std', 0.01) + self.target_scaler_reg.get('1h', {}).get('mean', 0.0)
+                        pred_4h = p4_norm * self.target_scaler_reg.get('4h', {}).get('std', 0.02) + self.target_scaler_reg.get('4h', {}).get('mean', 0.0)
+                        pred_12h = p12_norm * self.target_scaler_reg.get('12h', {}).get('std', 0.035) + self.target_scaler_reg.get('12h', {}).get('mean', 0.0)
+                    else:
+                        pred_1h, pred_4h, pred_12h = p1_norm, p4_norm, p12_norm
 
                     if (pred_4h >= min_thresh or pred_12h >= min_thresh * 1.5) and pred_1h > 0:
                         vote_m1 = 'BUY'
@@ -277,18 +365,26 @@ class SignalGenerator:
                 raw_win_prob = 0.50
                 raw_loss_prob = 0.50
 
-                if self.model_gpt is not None and raw_matrix is not None:
-                    sim_res = MarketGPTWorldModel.simulate_future_paths(self.model_gpt, raw_matrix, n_simulations=500)
+                if self.model_gpt is not None and gpt_matrix is not None:
+                    sim_res = MarketGPTWorldModel.simulate_future_paths(
+                        self.model_gpt,
+                        gpt_matrix,
+                        scaler=getattr(self, 'scaler_gpt', None),
+                        n_simulations=500
+                    )
                     raw_win_prob = float(sim_res.get('win_probability', 0.5))
                     raw_loss_prob = float(sim_res.get('loss_probability', 0.5))
+                    exp_return_m3 = float(sim_res.get('expected_return', 0.0))
 
-                    if raw_win_prob >= 0.55:
+                    if (raw_win_prob >= 0.15 or exp_return_m3 >= 0.004) and raw_win_prob > raw_loss_prob * 1.5:
                         vote_m3 = 'BUY'
-                    elif raw_loss_prob >= 0.55:
+                    elif (raw_loss_prob >= 0.15 or exp_return_m3 <= -0.004) and raw_loss_prob > raw_win_prob * 1.5:
                         vote_m3 = 'SELL'
+                    else:
+                        vote_m3 = 'HOLD'
 
                 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                # TALLY VOTES & MAJORITY DECISION
+                # TALLY VOTES & 2/3 MAJORITY DECISION
                 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 votes = [vote_m1, vote_m2, vote_m3]
                 buy_votes = votes.count('BUY')
@@ -304,12 +400,17 @@ class SignalGenerator:
                     self.logger.info(f"⏭️ Skipping {symbol}: No 2/3 Majority Consensus (Votes: M1={vote_m1}, M2={vote_m2}, M3={vote_m3})")
                     return None
 
-                # Calculate true Win Probability for chosen direction
-                actual_win_prob = float(raw_win_prob if final_action == 'BUY' else raw_loss_prob)
+                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                # MODEL 4: STRATEGY INTELLIGENCE LAYER EVALUATION
+                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                model4_eval = self.model4_engine.evaluate(current_data, committee_direction=final_action)
+                conf_delta = model4_eval.get('confidence_delta', 0.0)
 
-                # ✅ DEFINE CONFIDENCE AND STRENGTH FIRST BEFORE DICTIONARY CREATION
-                confidence = float(max(0.55, actual_win_prob))
-                strength = float(min(actual_win_prob * 0.9 + abs(pred_4h) * 10.0, 1.0))
+                # Calculate true Win Probability & modulate confidence with Model 4 feedback
+                actual_win_prob = float(raw_win_prob if final_action == 'BUY' else raw_loss_prob)
+                base_confidence = float(max(0.55, actual_win_prob))
+                confidence = float(np.clip(base_confidence + conf_delta, 0.20, 0.98))
+                strength = float(min(actual_win_prob * 0.9 + abs(pred_4h) * 10.0 + (0.05 if model4_eval.get('is_aligned') else 0.0), 1.0))
 
                 consensus_tag = "3/3 UNANIMOUS" if vote_count == 3 else "2/3 MAJORITY"
 
@@ -326,6 +427,10 @@ class SignalGenerator:
                     stop_loss = current_price + (sl_mult * atr)
                     tp1 = current_price - (tp_mult * atr * 0.7)
                     tp2 = current_price - (tp_mult * atr)
+
+                active_strats = model4_eval.get('active_strategies', [])
+                strat_bias = model4_eval.get('strategy_bias', 'NEUTRAL')
+                strat_summary = f" [Model4: {strat_bias} | {len(active_strats)}/9 Active]" if active_strats else ""
 
                 signal = {
                     'timestamp': datetime.now().isoformat() + 'Z',
@@ -360,6 +465,15 @@ class SignalGenerator:
                             'raw_long_win_prob': f"{raw_win_prob:.1%}",
                             'raw_short_win_prob': f"{raw_loss_prob:.1%}"
                         },
+                        'model_4_strategy_detectors': {
+                            'strategy_bias': strat_bias,
+                            'active_count': f"{len(active_strats)}/9",
+                            'agreement_score': f"{model4_eval.get('agreement_score', 0.0):.1%}",
+                            'conflict_score': f"{model4_eval.get('conflict_score', 0.0):.1%}",
+                            'confirmation_score': f"{model4_eval.get('confirmation_score', 0.0):.1%}",
+                            'confidence_impact': f"{conf_delta:+.2%}",
+                            'detectors': model4_eval.get('strategies', {})
+                        },
                         'committee_consensus': {
                             'majority_votes': f"{vote_count}/3",
                             'consensus_type': consensus_tag
@@ -372,6 +486,8 @@ class SignalGenerator:
                         'majority': f"{vote_count}/3",
                         'tag': consensus_tag
                     },
+                    'model4': model4_eval,
+                    'model4_strategies': model4_eval,
                     'expected_returns': {
                         '1h_return': f"{pred_1h:+.2%}",
                         '4h_return': f"{pred_4h:+.2%}",
@@ -389,9 +505,10 @@ class SignalGenerator:
                         'max_holding_hours': self.config['trading']['risk']['max_holding_hours']
                     },
                     'analysis': {
-                        'summary': f"{consensus_tag} {final_action} on {symbol} (M1={vote_m1}, M2={vote_m2}, M3={vote_m3})",
+                        'summary': f"{consensus_tag} {final_action} on {symbol} (M1={vote_m1}, M2={vote_m2}, M3={vote_m3}){strat_summary}",
                         'signal_type': 'STRONG_TREND',
-                        'detected_pattern': f"AI_{vote_count}_OF_3_VOTE"
+                        'detected_pattern': f"AI_{vote_count}_OF_3_VOTE",
+                        'active_strategies': active_strats
                     },
                     'outcome': 'OPEN',
                     'pnl_percentage': None,
@@ -399,8 +516,10 @@ class SignalGenerator:
                 }
 
                 self.logger.info(
-                    f"🎯 {consensus_tag} APPROVED {symbol}: {final_action} (Votes: {vote_count}/3) | "
-                    f"M1={vote_m1}, M2={vote_m2}, M3={vote_m3} | WinProb: {actual_win_prob:.1%}"
+                    f"🎯 {consensus_tag} APPROVED {symbol}: {final_action} (Votes: {vote_count}/3 | "
+                    f"M1={vote_m1}, M2={vote_m2}, M3={vote_m3}) | "
+                    f"Model 4: Bias={strat_bias} ({len(active_strats)}/9 Active, "
+                    f"Agree={model4_eval.get('agreement_score', 0.0):.0%}) | Conf: {confidence:.1%}"
                 )
 
                 if self.history_manager:
@@ -409,7 +528,7 @@ class SignalGenerator:
                 return signal
 
             except Exception as e:
-                self.logger.error(f"Error generating 2/3 voting signal for {symbol}: {e}", exc_info=True)
+                self.logger.error(f"Error generating signal for {symbol}: {e}", exc_info=True)
                 return None
 
     def update_performance_metrics(self, success: bool):
@@ -432,6 +551,7 @@ class SignalGenerator:
             'accuracy_1h': self.performance_metrics['accuracy_1h'],
             'accuracy_4h': self.performance_metrics['accuracy_4h'],
             'accuracy_1d': self.performance_metrics['accuracy_1d'],
+            'model4_detectors_loaded': len(self.model4_engine.detectors) if hasattr(self, 'model4_engine') else 0,
         }
 
     def get_symbol_performance(self, symbol: str, days: int = 30) -> Dict:
@@ -440,9 +560,17 @@ class SignalGenerator:
     def get_recent_signals(self, symbol: Optional[str] = None, hours: int = 24, limit: int = 50) -> List[Dict]:
         return self.history_manager.get_recent_signals(symbol, hours, limit)
 
+    def get_latest_signals(self, symbol: Optional[str] = None) -> List[Dict]:
+        return self.get_recent_signals(symbol=symbol, hours=24, limit=50)
+
+    def get_latest_signal(self, symbol: str) -> Optional[Dict]:
+        signals = self.get_recent_signals(symbol=symbol, hours=24, limit=1)
+        return signals[0] if signals else None
+
     def health_check(self) -> Dict:
         return {
             'model_loaded': self.model_loaded,
+            'model4_detectors_count': len(self.model4_engine.detectors) if hasattr(self, 'model4_engine') else 0,
             'performance_stats': self.get_performance_stats(),
             'last_signal_time': self.performance_metrics['last_update'].isoformat(),
             'status': 'healthy' if self.model_loaded else 'degraded'

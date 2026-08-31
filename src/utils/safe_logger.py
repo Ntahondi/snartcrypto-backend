@@ -111,8 +111,26 @@ class SafeFormatter(logging.Formatter):
         return msg
 
 
+class SafeRotatingFileHandler(RotatingFileHandler):
+    """
+    Windows-safe RotatingFileHandler that gracefully handles PermissionError 
+    during file rotation without raising errors or polluting stderr.
+    """
+    def shouldRollover(self, record):
+        try:
+            return super().shouldRollover(record)
+        except (PermissionError, OSError):
+            return False
+
+    def doRollover(self):
+        try:
+            super().doRollover()
+        except (PermissionError, OSError):
+            pass
+
+
 class SafeLogger:
-    """Production logger setup helper"""
+    """Safe logger factory with noise filtering and Windows-compatible emoji formatting"""
     
     @staticmethod
     def setup_logging(
@@ -148,12 +166,13 @@ class SafeLogger:
             console_handler.addFilter(prod_filter)
         root_logger.addHandler(console_handler)
         
-        # File Handler (UTF-8, max 10MB x 5 rotation files)
-        file_handler = RotatingFileHandler(
+        # File Handler (UTF-8, max 10MB x 5 rotation files, safe on Windows)
+        file_handler = SafeRotatingFileHandler(
             log_file,
             maxBytes=max_bytes,
             backupCount=backup_count,
-            encoding='utf-8'
+            encoding='utf-8',
+            delay=True
         )
         file_handler.setLevel(getattr(logging, file_level.upper(), logging.INFO))
         file_formatter = logging.Formatter(

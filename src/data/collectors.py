@@ -1,320 +1,1309 @@
 """
-Enhanced data collectors with multiple exchange support
-Fetches OHLCV, derivatives data (funding rates, open interest) for AI models
+src/data/collectors.py
+
+SmartCrypto AI v3.1.0
+Market data collection layer.
+
+Responsibilities:
+    - Binance Futures OHLCV
+    - Funding-rate history
+    - Open-interest history
+    - Current derivatives state
+    - Current order-book microstructure
+    - Clean alignment of heterogeneous data
+    - Multi-exchange fallback architecture
+
+This module only collects and aligns raw/current market data.
+Feature engineering remains inside DataProcessor.
+Signal generation remains inside signal_generator.py.
 """
 
 import asyncio
-import aiohttp
-import pandas as pd
-import numpy as np
-from typing import Dict, List, Optional, Tuple
-from datetime import datetime, timedelta
 import logging
+from typing import Dict, List, Optional
+
+import aiohttp
 import ccxt.async_support as ccxt
+import pandas as pd
 
 from src.core.config import Settings
 from src.utils.safe_logger import SafeLogger
+
 
 logger = SafeLogger.get_logger(__name__)
 
 
 class BinanceDataCollector:
-    """Enhanced Binance data collector with derivatives support"""
-    
+    """
+    Binance Futures data collector.
+
+    Uses:
+        - Binance Spot REST for OHLCV
+        - Binance Futures through CCXT for derivatives/order book
+
+    The returned dataframe is standardized for DataProcessor.
+    """
+
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.base_url = getattr(settings, 'BINANCE_API_BASE', 'https://api.binance.com')
+
+        self.base_url = getattr(
+            settings,
+            "BINANCE_API_BASE",
+            "https://api.binance.com",
+        )
+
+        self.futures_base_url = getattr(
+            settings,
+            "BINANCE_FUTURES_API_BASE",
+            "https://fapi.binance.com",
+        )
+
         self.session: Optional[aiohttp.ClientSession] = None
-        
-        self.exchange = ccxt.binanceusdm({
-            'enableRateLimit': True,
-            'options': {'defaultType': 'future'}
-        })
-        
+
+        self.exchange = ccxt.binanceusdm(
+            {
+                "enableRateLimit": True,
+                "options": {
+                    "defaultType": "future",
+                },
+            }
+        )
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # SESSION MANAGEMENT
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
     async def get_session(self) -> aiohttp.ClientSession:
-        """Get or create aiohttp session"""
+        """Create or reuse the asynchronous HTTP session."""
+
         if self.session is None or self.session.closed:
-            timeout = aiohttp.ClientTimeout(total=30)
-            self.session = aiohttp.ClientSession(timeout=timeout)
+            timeout = aiohttp.ClientTimeout(
+                total=30,
+                connect=10,
+            )
+
+            self.session = aiohttp.ClientSession(
+                timeout=timeout,
+            )
+
         return self.session
 
+    async def close(self) -> None:
+        """Close HTTP and CCXT resources."""
+
+        try:
+            if self.session and not self.session.closed:
+                await self.session.close()
+
+            self.session = None
+
+        except Exception as exc:
+            logger.warning(
+                f"Error closing HTTP session: {exc}"
+            )
+
+        try:
+            await self.exchange.close()
+
+        except Exception as exc:
+            logger.warning(
+                f"Error closing exchange connection: {exc}"
+            )
+
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # OHLCV DATA
+    # SYMBOL HELPERS
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    
-    async def fetch_historical_data(self, symbol: str, interval: str = '1h', 
-                                  limit: int = 1000) -> Optional[pd.DataFrame]:
-        """Fetch historical kline data with error handling"""
+
+    @staticmethod
+    def to_ccxt_symbol(symbol: str) -> str:
+        """
+        Convert Binance symbol to CCXT Futures symbol.
+
+        BTCUSDT -> BTC/USDT:USDT
+        ETHUSDT -> ETH/USDT:USDT
+        """
+
+        symbol = str(symbol).upper().strip()
+
+        if symbol.endswith("USDT"):
+            base = symbol[:-4]
+            return f"{base}/USDT:USDT"
+
+        return symbol
+
+    @staticmethod
+    def to_binance_symbol(symbol: str) -> str:
+        """
+        Normalize symbol to Binance format.
+
+        BTC/USDT:USDT -> BTCUSDT
+        """
+
+        symbol = str(symbol).upper().strip()
+
+        return (
+            symbol
+            .replace("/", "")
+            .replace(":USDT", "")
+            .replace(":USDC", "")
+        )
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # OHLCV
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    async def fetch_historical_data(
+        self,
+        symbol: str,
+        interval: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> Optional[pd.DataFrame]:
+        """
+        Fetch Binance OHLCV candles.
+
+        The interval and limit default to configuration values.
+        """
+
+        interval = interval or getattr(
+            self.settings,
+            "DEFAULT_INTERVAL",
+            "1h",
+        )
+
+        limit = limit or getattr(
+            self.settings,
+            "DEFAULT_LIMIT",
+            500,
+        )
+
+        binance_symbol = self.to_binance_symbol(
+            symbol
+        )
+
+        url = (
+            f"{self.base_url}"
+            "/api/v3/klines"
+        )
+
+        params = {
+            "symbol": binance_symbol,
+            "interval": interval,
+            "limit": min(int(limit), 1000),
+        }
+
         for attempt in range(3):
+
             try:
+
                 session = await self.get_session()
-                url = f"{self.base_url}/api/v3/klines"
-                params = {
-                    'symbol': symbol,
-                    'interval': interval,
-                    'limit': limit
-                }
-                
-                async with session.get(url, params=params) as response:
+
+                async with session.get(
+                    url,
+                    params=params,
+                ) as response:
+
                     if response.status == 200:
+
                         data = await response.json()
-                        return self.parse_kline_data(data, symbol)
-                    else:
-                        logger.warning(f"Attempt {attempt + 1} failed for {symbol}")
-                        await asyncio.sleep(2 ** attempt)
-                        
-            except Exception as e:
-                logger.error(f"Error fetching OHLCV data for {symbol}: {e}")
-                await asyncio.sleep(1)
-                
+
+                        if not data:
+                            logger.warning(
+                                f"Empty OHLCV response for "
+                                f"{binance_symbol}"
+                            )
+                            return None
+
+                        return self.parse_kline_data(
+                            data,
+                            binance_symbol,
+                            interval,
+                        )
+
+                    body = await response.text()
+
+                    logger.warning(
+                        f"OHLCV attempt {attempt + 1}/3 failed "
+                        f"for {binance_symbol}: "
+                        f"HTTP {response.status} - {body[:200]}"
+                    )
+
+            except asyncio.CancelledError:
+                raise
+
+            except Exception as exc:
+
+                logger.warning(
+                    f"OHLCV attempt {attempt + 1}/3 failed "
+                    f"for {binance_symbol}: {exc}"
+                )
+
+            if attempt < 2:
+                await asyncio.sleep(
+                    2 ** attempt
+                )
+
         return None
 
-    def parse_kline_data(self, data: List, symbol: str) -> pd.DataFrame:
-        """Parse Binance kline data into DataFrame with standardized column names"""
-        df = pd.DataFrame(data, columns=[
-            'open_time', 'open', 'high', 'low', 'close', 'volume',
-            'close_time', 'quote_asset_volume', 'number_of_trades',
-            'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
-        ])
-        
-        # FIX: Rename raw Binance columns to match AI Feature Engineer expectations
-        df = df.rename(columns={
-            'number_of_trades': 'trades_count',
-            'taker_buy_base_asset_volume': 'taker_buy_base_volume',
-            'taker_buy_quote_asset_volume': 'taker_buy_quote_volume'
-        })
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # KLINE PARSER
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-        # Convert numeric types
-        numeric_columns = ['open', 'high', 'low', 'close', 'volume', 
-                          'quote_asset_volume', 'trades_count',
-                          'taker_buy_base_volume', 'taker_buy_quote_volume']
-        for col in numeric_columns:
-            if col in df.columns:
-                df[col] = df[col].astype(float)
-        
-        df['timestamp'] = pd.to_datetime(df['open_time'], unit='ms')
-        df['symbol'] = symbol
-        
+    def parse_kline_data(
+        self,
+        data: List,
+        symbol: str,
+        interval: str = "1h",
+    ) -> pd.DataFrame:
+        """
+        Convert Binance kline response to standardized dataframe.
+        """
+
+        columns = [
+            "open_time",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "close_time",
+            "quote_asset_volume",
+            "number_of_trades",
+            "taker_buy_base_asset_volume",
+            "taker_buy_quote_asset_volume",
+            "ignore",
+        ]
+
+        df = pd.DataFrame(
+            data,
+            columns=columns,
+        )
+
+        df = df.rename(
+            columns={
+                "number_of_trades": "trades_count",
+                "taker_buy_base_asset_volume":
+                    "taker_buy_base_volume",
+                "taker_buy_quote_asset_volume":
+                    "taker_buy_quote_volume",
+            }
+        )
+
+        numeric_columns = [
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "quote_asset_volume",
+            "trades_count",
+            "taker_buy_base_volume",
+            "taker_buy_quote_volume",
+        ]
+
+        for column in numeric_columns:
+
+            if column in df.columns:
+
+                df[column] = pd.to_numeric(
+                    df[column],
+                    errors="coerce",
+                )
+
+        df["timestamp"] = pd.to_datetime(
+            df["open_time"],
+            unit="ms",
+            utc=True,
+        )
+
+        df["close_timestamp"] = pd.to_datetime(
+            df["close_time"],
+            unit="ms",
+            utc=True,
+        )
+
+        df["symbol"] = symbol
+        df["interval"] = interval
+
+        df = (
+            df.sort_values("timestamp")
+            .drop_duplicates(
+                subset=["timestamp"],
+                keep="last",
+            )
+            .reset_index(drop=True)
+        )
+
         return df
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # DERIVATIVES DATA
+    # FUNDING RATE HISTORY
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    
-    async def fetch_funding_rate_history(self, symbol_ccxt: str, limit: int = 1000) -> Optional[pd.DataFrame]:
-        """Fetch historical funding rates from Binance Futures via CCXT"""
+
+    async def fetch_funding_rate_history(
+        self,
+        symbol_ccxt: str,
+        limit: int = 1000,
+    ) -> Optional[pd.DataFrame]:
+        """
+        Fetch historical Binance Futures funding rates.
+        """
+
         try:
-            funding_raw = await self.exchange.fetch_funding_rate_history(
-                symbol=symbol_ccxt, 
-                limit=limit
-            )
-            
-            if funding_raw:
-                df_funding = pd.DataFrame(funding_raw)
-                df_funding['timestamp'] = pd.to_datetime(df_funding['timestamp'], unit='ms')
-                df_funding = df_funding[['timestamp', 'fundingRate']].rename(
-                    columns={'fundingRate': 'funding_rate'}
+
+            funding_raw = (
+                await self.exchange.fetch_funding_rate_history(
+                    symbol=symbol_ccxt,
+                    limit=min(int(limit), 1000),
                 )
-                return df_funding
-            else:
-                logger.warning(f"No funding rate data for {symbol_ccxt}")
-                return None
-                
-        except Exception as e:
-            logger.warning(f"Error fetching funding rates for {symbol_ccxt}: {e}")
-            return None
-
-    async def fetch_open_interest_history(self, symbol_ccxt: str, period: str = '1h', 
-                                        limit: int = 1000) -> Optional[pd.DataFrame]:
-        """Fetch historical open interest from Binance Futures"""
-        try:
-            symbol_raw = symbol_ccxt.replace('/', '').replace(':USDT', '')
-            import requests
-            url = "https://fapi.binance.com/futures/data/openInterestHist"
-            params = {
-                'symbol': symbol_raw,
-                'period': period,
-                'limit': limit
-            }
-            
-            response = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: requests.get(url, params=params, timeout=15)
             )
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data:
-                    df_oi = pd.DataFrame(data)
-                    df_oi['timestamp'] = pd.to_datetime(df_oi['timestamp'].astype(int), unit='ms')
-                    df_oi['open_interest'] = df_oi['sumOpenInterest'].astype(float)
-                    df_oi['open_interest_usd'] = df_oi['sumOpenInterestValue'].astype(float)
-                    return df_oi[['timestamp', 'open_interest', 'open_interest_usd']]
-            
-            return None
-            
-        except Exception as e:
-            logger.warning(f"Error fetching open interest for {symbol_ccxt}: {e}")
-            return None
 
-    async def fetch_current_derivatives(self, symbol_ccxt: str) -> Dict:
-        """Fetch current derivatives data (funding rate, open interest)"""
-        try:
-            funding = await self.exchange.fetch_funding_rate(symbol_ccxt)
-            funding_rate = funding.get('fundingRate', 0)
-            
-            oi = await self.exchange.fetch_open_interest(symbol_ccxt)
-            open_interest = oi.get('openInterest', 0)
-            open_interest_usd = oi.get('openInterestValue', 0)
-            
-            return {
-                'funding_rate': funding_rate,
-                'open_interest': open_interest,
-                'open_interest_usd': open_interest_usd,
-                'timestamp': pd.Timestamp.now()
-            }
-        except Exception as e:
-            logger.warning(f"Error fetching current derivatives for {symbol_ccxt}: {e}")
-            return {
-                'funding_rate': 0,
-                'open_interest': 0,
-                'open_interest_usd': 0,
-                'timestamp': pd.Timestamp.now()
-            }
-
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # ORDER BOOK DATA
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    
-    async def fetch_order_book_imbalance(self, symbol_ccxt: str, depth_pct: float = 0.01) -> Dict:
-        """Fetch order book imbalance ratio (-1 to +1)"""
-        try:
-            orderbook = await self.exchange.fetch_order_book(symbol_ccxt, limit=100)
-            
-            best_bid = orderbook['bids'][0][0]
-            best_ask = orderbook['asks'][0][0]
-            mid_price = (best_bid + best_ask) / 2.0
-            
-            bids_in_depth = sum([
-                b[1] for b in orderbook['bids'] 
-                if b[0] >= mid_price * (1.0 - depth_pct)
-            ])
-            asks_in_depth = sum([
-                a[1] for a in orderbook['asks'] 
-                if a[0] <= mid_price * (1.0 + depth_pct)
-            ])
-            
-            total = bids_in_depth + asks_in_depth
-            imbalance = (bids_in_depth - asks_in_depth) / (total + 1e-8)
-            
-            return {
-                'imbalance': imbalance,
-                'spread_pct': (best_ask - best_bid) / mid_price,
-                'bid_volume': bids_in_depth,
-                'ask_volume': asks_in_depth,
-                'mid_price': mid_price,
-                'best_bid': best_bid,
-                'best_ask': best_ask,
-            }
-        except Exception as e:
-            logger.warning(f"Error fetching order book for {symbol_ccxt}: {e}")
-            return {
-                'imbalance': 0,
-                'spread_pct': 0.0001,
-                'bid_volume': 0,
-                'ask_volume': 0,
-                'mid_price': 0,
-                'best_bid': 0,
-                'best_ask': 0,
-            }
-
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # COMPLETE DATA FETCH
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    
-    async def fetch_complete_data(self, symbol: str, limit: int = 1000) -> Optional[pd.DataFrame]:
-        """
-        Fetch complete data: OHLCV + derivatives + order book.
-        Merges all data sources cleanly into a single DataFrame.
-        """
-        try:
-            df_ohlcv = await self.fetch_historical_data(symbol, limit=limit)
-            if df_ohlcv is None or df_ohlcv.empty:
-                logger.error(f"No OHLCV data for {symbol}")
+            if not funding_raw:
+                logger.warning(
+                    f"No funding data for {symbol_ccxt}"
+                )
                 return None
-            
-            symbol_ccxt = symbol.replace('USDT', '/USDT')
-            
-            df_funding = await self.fetch_funding_rate_history(symbol_ccxt, limit=limit)
-            df_oi = await self.fetch_open_interest_history(symbol_ccxt, limit=limit)
-            
-            df = df_ohlcv.copy()
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-            
-            if df_funding is not None and not df_funding.empty:
-                df_funding['timestamp'] = pd.to_datetime(df_funding['timestamp'])
-                df = pd.merge(df, df_funding, on='timestamp', how='left')
-            else:
-                df['funding_rate'] = 0.0
-            
-            if df_oi is not None and not df_oi.empty:
-                df_oi['timestamp'] = pd.to_datetime(df_oi['timestamp'])
-                df = pd.merge(df, df_oi, on='timestamp', how='left')
-            else:
-                df['open_interest'] = 0.0
-                df['open_interest_usd'] = 0.0
-            
-            df['funding_rate'] = df['funding_rate'].ffill().fillna(0.0)
-            df['open_interest'] = df['open_interest'].ffill().fillna(0.0)
-            df['open_interest_usd'] = df['open_interest_usd'].ffill().fillna(0.0)
-            
-            ob_data = await self.fetch_order_book_imbalance(symbol_ccxt)
-            
-            if len(df) > 0:
-                df.loc[df.index[-1], 'order_imbalance'] = ob_data.get('imbalance', 0.0)
-                df.loc[df.index[-1], 'buy_pressure'] = ob_data.get('imbalance', 0.0) * 0.5 + 0.5
-                
-                df['order_imbalance'] = df['order_imbalance'].fillna(0.0)
-                df['buy_pressure'] = df['buy_pressure'].fillna(0.5)
-            
-            logger.info(f"✅ Complete data fetched for {symbol}: {len(df)} rows")
-            return df
-            
-        except Exception as e:
-            logger.error(f"Error fetching complete data for {symbol}: {e}")
+
+            df = pd.DataFrame(
+                funding_raw
+            )
+
+            if "timestamp" not in df.columns:
+                return None
+
+            funding_column = None
+
+            if "fundingRate" in df.columns:
+                funding_column = "fundingRate"
+
+            elif "info" in df.columns:
+                values = []
+
+                for info in df["info"]:
+                    try:
+                        values.append(
+                            float(
+                                info.get(
+                                    "fundingRate",
+                                    0.0,
+                                )
+                            )
+                        )
+                    except Exception:
+                        values.append(0.0)
+
+                df["funding_rate"] = values
+                funding_column = "funding_rate"
+
+            if funding_column is None:
+                return None
+
+            if funding_column != "funding_rate":
+                df["funding_rate"] = pd.to_numeric(
+                    df[funding_column],
+                    errors="coerce",
+                )
+
+            df["timestamp"] = pd.to_datetime(
+                df["timestamp"],
+                unit="ms",
+                utc=True,
+            )
+
+            df = df[
+                [
+                    "timestamp",
+                    "funding_rate",
+                ]
+            ]
+
+            return (
+                df.sort_values("timestamp")
+                .drop_duplicates(
+                    subset=["timestamp"],
+                    keep="last",
+                )
+                .reset_index(drop=True)
+            )
+
+        except asyncio.CancelledError:
+            raise
+
+        except Exception as exc:
+
+            logger.warning(
+                f"Funding history failed for "
+                f"{symbol_ccxt}: {exc}"
+            )
+
             return None
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # OPEN INTEREST HISTORY
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    async def fetch_open_interest_history(
+        self,
+        symbol_ccxt: str,
+        period: str = "1h",
+        limit: int = 1000,
+    ) -> Optional[pd.DataFrame]:
+        """
+        Fetch historical Binance Futures open interest.
+
+        Uses asynchronous aiohttp rather than blocking requests.
+        """
+
+        try:
+
+            session = await self.get_session()
+
+            symbol = self.to_binance_symbol(
+                symbol_ccxt
+            )
+
+            url = (
+                f"{self.futures_base_url}"
+                "/futures/data/openInterestHist"
+            )
+
+            params = {
+                "symbol": symbol,
+                "period": period,
+                "limit": min(int(limit), 500),
+            }
+
+            async with session.get(
+                url,
+                params=params,
+            ) as response:
+
+                if response.status != 200:
+
+                    body = await response.text()
+
+                    logger.warning(
+                        f"Open interest request failed "
+                        f"for {symbol}: "
+                        f"HTTP {response.status} "
+                        f"{body[:200]}"
+                    )
+
+                    return None
+
+                data = await response.json()
+
+            if not data:
+                return None
+
+            df = pd.DataFrame(data)
+
+            if "timestamp" not in df.columns:
+                return None
+
+            df["timestamp"] = pd.to_datetime(
+                pd.to_numeric(
+                    df["timestamp"],
+                    errors="coerce",
+                ),
+                unit="ms",
+                utc=True,
+            )
+
+            if "sumOpenInterest" in df.columns:
+
+                df["open_interest"] = pd.to_numeric(
+                    df["sumOpenInterest"],
+                    errors="coerce",
+                )
+
+            if "sumOpenInterestValue" in df.columns:
+
+                df["open_interest_usd"] = pd.to_numeric(
+                    df["sumOpenInterestValue"],
+                    errors="coerce",
+                )
+
+            required = [
+                "timestamp",
+                "open_interest",
+                "open_interest_usd",
+            ]
+
+            for column in required:
+
+                if column not in df.columns:
+                    df[column] = 0.0
+
+            return (
+                df[required]
+                .sort_values("timestamp")
+                .drop_duplicates(
+                    subset=["timestamp"],
+                    keep="last",
+                )
+                .reset_index(drop=True)
+            )
+
+        except asyncio.CancelledError:
+            raise
+
+        except Exception as exc:
+
+            logger.warning(
+                f"Open interest failed for "
+                f"{symbol_ccxt}: {exc}"
+            )
+
+            return None
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # CURRENT DERIVATIVES
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    async def fetch_current_derivatives(
+        self,
+        symbol_ccxt: str,
+    ) -> Dict:
+        """
+        Fetch current funding rate and open interest.
+        """
+
+        now = pd.Timestamp.now(
+            tz="UTC"
+        )
+
+        default = {
+            "funding_rate": 0.0,
+            "open_interest": 0.0,
+            "open_interest_usd": 0.0,
+            "timestamp": now,
+        }
+
+        try:
+
+            funding, oi = await asyncio.gather(
+                self.exchange.fetch_funding_rate(
+                    symbol_ccxt
+                ),
+                self.exchange.fetch_open_interest(
+                    symbol_ccxt
+                ),
+                return_exceptions=True,
+            )
+
+            if not isinstance(
+                funding,
+                Exception,
+            ):
+
+                default["funding_rate"] = float(
+                    funding.get(
+                        "fundingRate",
+                        0.0,
+                    )
+                    or 0.0
+                )
+
+            if not isinstance(
+                oi,
+                Exception,
+            ):
+
+                default["open_interest"] = float(
+                    oi.get(
+                        "openInterest",
+                        0.0,
+                    )
+                    or 0.0
+                )
+
+                default["open_interest_usd"] = float(
+                    oi.get(
+                        "openInterestValue",
+                        0.0,
+                    )
+                    or 0.0
+                )
+
+            return default
+
+        except asyncio.CancelledError:
+            raise
+
+        except Exception as exc:
+
+            logger.warning(
+                f"Current derivatives failed for "
+                f"{symbol_ccxt}: {exc}"
+            )
+
+            return default
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # ORDER BOOK
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    async def fetch_order_book_imbalance(
+        self,
+        symbol_ccxt: str,
+        depth_pct: float = 0.01,
+        limit: int = 100,
+    ) -> Dict:
+        """
+        Fetch current order-book microstructure.
+
+        imbalance:
+            -1 = ask dominated
+             0 = balanced
+            +1 = bid dominated
+        """
+
+        default = {
+            "imbalance": 0.0,
+            "spread_pct": 0.0,
+            "bid_volume": 0.0,
+            "ask_volume": 0.0,
+            "mid_price": 0.0,
+            "best_bid": 0.0,
+            "best_ask": 0.0,
+        }
+
+        try:
+
+            orderbook = (
+                await self.exchange.fetch_order_book(
+                    symbol_ccxt,
+                    limit=limit,
+                )
+            )
+
+            bids = orderbook.get(
+                "bids",
+                [],
+            )
+
+            asks = orderbook.get(
+                "asks",
+                [],
+            )
+
+            if not bids or not asks:
+                return default
+
+            best_bid = float(bids[0][0])
+            best_ask = float(asks[0][0])
+
+            mid_price = (
+                best_bid + best_ask
+            ) / 2.0
+
+            if mid_price <= 0:
+                return default
+
+            lower_bound = (
+                mid_price
+                * (1.0 - depth_pct)
+            )
+
+            upper_bound = (
+                mid_price
+                * (1.0 + depth_pct)
+            )
+
+            bid_volume = sum(
+                float(level[1])
+                for level in bids
+                if float(level[0])
+                >= lower_bound
+            )
+
+            ask_volume = sum(
+                float(level[1])
+                for level in asks
+                if float(level[0])
+                <= upper_bound
+            )
+
+            total_volume = (
+                bid_volume
+                + ask_volume
+            )
+
+            imbalance = (
+                bid_volume
+                - ask_volume
+            ) / (
+                total_volume
+                + 1e-8
+            )
+
+            spread_pct = (
+                best_ask
+                - best_bid
+            ) / mid_price
+
+            return {
+                "imbalance": float(
+                    imbalance
+                ),
+                "spread_pct": float(
+                    spread_pct
+                ),
+                "bid_volume": float(
+                    bid_volume
+                ),
+                "ask_volume": float(
+                    ask_volume
+                ),
+                "mid_price": float(
+                    mid_price
+                ),
+                "best_bid": float(
+                    best_bid
+                ),
+                "best_ask": float(
+                    best_ask
+                ),
+            }
+
+        except asyncio.CancelledError:
+            raise
+
+        except Exception as exc:
+
+            logger.warning(
+                f"Order book failed for "
+                f"{symbol_ccxt}: {exc}"
+            )
+
+            return default
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # COMPLETE DATA
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    async def fetch_complete_data(
+        self,
+        symbol: str,
+        interval: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> Optional[pd.DataFrame]:
+        """
+        Fetch and align:
+
+            OHLCV
+            + funding rate
+            + open interest
+            + current order-book state
+
+        Historical derivatives are aligned using backward
+        time matching rather than exact timestamp matching.
+        """
+
+        interval = interval or getattr(
+            self.settings,
+            "DEFAULT_INTERVAL",
+            "1h",
+        )
+
+        limit = limit or getattr(
+            self.settings,
+            "DEFAULT_LIMIT",
+            500,
+        )
+
+        try:
+
+            df_ohlcv = (
+                await self.fetch_historical_data(
+                    symbol=symbol,
+                    interval=interval,
+                    limit=limit,
+                )
+            )
+
+            if (
+                df_ohlcv is None
+                or df_ohlcv.empty
+            ):
+
+                logger.error(
+                    f"No OHLCV data for {symbol}"
+                )
+
+                return None
+
+            symbol_ccxt = self.to_ccxt_symbol(
+                symbol
+            )
+
+            # Fetch independent sources concurrently.
+            funding_task = (
+                self.fetch_funding_rate_history(
+                    symbol_ccxt,
+                    limit=limit,
+                )
+            )
+
+            oi_task = (
+                self.fetch_open_interest_history(
+                    symbol_ccxt,
+                    period=interval,
+                    limit=limit,
+                )
+            )
+
+            orderbook_task = (
+                self.fetch_order_book_imbalance(
+                    symbol_ccxt
+                )
+            )
+
+            funding_df, oi_df, orderbook = (
+                await asyncio.gather(
+                    funding_task,
+                    oi_task,
+                    orderbook_task,
+                    return_exceptions=True,
+                )
+            )
+
+            df = df_ohlcv.copy()
+
+            df["timestamp"] = pd.to_datetime(
+                df["timestamp"],
+                utc=True,
+            )
+
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # FUNDING
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+            if (
+                isinstance(
+                    funding_df,
+                    pd.DataFrame,
+                )
+                and not funding_df.empty
+            ):
+
+                funding_df = funding_df.copy()
+
+                funding_df["timestamp"] = (
+                    pd.to_datetime(
+                        funding_df["timestamp"],
+                        utc=True,
+                    )
+                )
+
+                funding_df = (
+                    funding_df
+                    .sort_values("timestamp")
+                    .drop_duplicates(
+                        "timestamp",
+                        keep="last",
+                    )
+                )
+
+                df = pd.merge_asof(
+                    df.sort_values("timestamp"),
+                    funding_df.sort_values(
+                        "timestamp"
+                    ),
+                    on="timestamp",
+                    direction="backward",
+                )
+
+            if (
+                "funding_rate" not in df.columns
+            ):
+                df["funding_rate"] = 0.0
+
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # OPEN INTEREST
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+            if (
+                isinstance(
+                    oi_df,
+                    pd.DataFrame,
+                )
+                and not oi_df.empty
+            ):
+
+                oi_df = oi_df.copy()
+
+                oi_df["timestamp"] = (
+                    pd.to_datetime(
+                        oi_df["timestamp"],
+                        utc=True,
+                    )
+                )
+
+                oi_df = (
+                    oi_df
+                    .sort_values("timestamp")
+                    .drop_duplicates(
+                        "timestamp",
+                        keep="last",
+                    )
+                )
+
+                df = pd.merge_asof(
+                    df.sort_values("timestamp"),
+                    oi_df.sort_values(
+                        "timestamp"
+                    ),
+                    on="timestamp",
+                    direction="backward",
+                )
+
+            if (
+                "open_interest"
+                not in df.columns
+            ):
+                df["open_interest"] = 0.0
+
+            if (
+                "open_interest_usd"
+                not in df.columns
+            ):
+                df["open_interest_usd"] = 0.0
+
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # FILL DERIVATIVE GAPS
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+            derivative_columns = [
+                "funding_rate",
+                "open_interest",
+                "open_interest_usd",
+            ]
+
+            for column in derivative_columns:
+
+                df[column] = pd.to_numeric(
+                    df[column],
+                    errors="coerce",
+                )
+
+                df[column] = (
+                    df[column]
+                    .ffill()
+                    .fillna(0.0)
+                )
+
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # CURRENT ORDER BOOK
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+            if isinstance(
+                orderbook,
+                dict,
+            ):
+
+                imbalance = float(
+                    orderbook.get(
+                        "imbalance",
+                        0.0,
+                    )
+                    or 0.0
+                )
+
+                buy_pressure = (
+                    imbalance * 0.5
+                    + 0.5
+                )
+
+                if len(df) > 0:
+
+                    latest = df.index[-1]
+
+                    df.loc[
+                        latest,
+                        "order_imbalance"
+                    ] = imbalance
+
+                    df.loc[
+                        latest,
+                        "buy_pressure"
+                    ] = buy_pressure
+
+                    df.loc[
+                        latest,
+                        "spread_pct"
+                    ] = float(
+                        orderbook.get(
+                            "spread_pct",
+                            0.0,
+                        )
+                        or 0.0
+                    )
+
+                    df.loc[
+                        latest,
+                        "best_bid"
+                    ] = float(
+                        orderbook.get(
+                            "best_bid",
+                            0.0,
+                        )
+                        or 0.0
+                    )
+
+                    df.loc[
+                        latest,
+                        "best_ask"
+                    ] = float(
+                        orderbook.get(
+                            "best_ask",
+                            0.0,
+                        )
+                        or 0.0
+                    )
+
+                    df.loc[
+                        latest,
+                        "orderbook_mid_price"
+                    ] = float(
+                        orderbook.get(
+                            "mid_price",
+                            0.0,
+                        )
+                        or 0.0
+                    )
+
+            # Historical rows do not have a historical
+            # order-book snapshot, so keep neutral values.
+            if (
+                "order_imbalance"
+                not in df.columns
+            ):
+                df["order_imbalance"] = 0.0
+
+            if (
+                "buy_pressure"
+                not in df.columns
+            ):
+                df["buy_pressure"] = 0.5
+
+            if (
+                "spread_pct"
+                not in df.columns
+            ):
+                df["spread_pct"] = 0.0
+
+            if (
+                "best_bid"
+                not in df.columns
+            ):
+                df["best_bid"] = 0.0
+
+            if (
+                "best_ask"
+                not in df.columns
+            ):
+                df["best_ask"] = 0.0
+
+            if (
+                "orderbook_mid_price"
+                not in df.columns
+            ):
+                df["orderbook_mid_price"] = 0.0
+
+            df["order_imbalance"] = (
+                df["order_imbalance"]
+                .fillna(0.0)
+            )
+
+            df["buy_pressure"] = (
+                df["buy_pressure"]
+                .fillna(0.5)
+            )
+
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # FINAL NORMALIZATION
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+            df = (
+                df
+                .sort_values("timestamp")
+                .drop_duplicates(
+                    subset=["timestamp"],
+                    keep="last",
+                )
+                .reset_index(drop=True)
+            )
+
+            numeric_columns = (
+                df.select_dtypes(
+                    include=["number"]
+                ).columns
+            )
+
+            df[numeric_columns] = (
+                df[numeric_columns]
+                .replace(
+                    [float("inf"), float("-inf")],
+                    pd.NA,
+                )
+                .ffill()
+                .fillna(0.0)
+            )
+
+            logger.info(
+                f"Complete market data fetched "
+                f"for {symbol}: {len(df)} rows"
+            )
+
+            return df
+
+        except asyncio.CancelledError:
+            raise
+
+        except Exception as exc:
+
+            logger.error(
+                f"Complete data fetch failed "
+                f"for {symbol}: {exc}",
+                exc_info=True,
+            )
+
+            return None
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# MULTI-EXCHANGE COLLECTOR
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
 class MultiExchangeCollector:
-    """Collect data from multiple exchanges with fallbacks"""
-    
-    def __init__(self, settings: Settings):
+    """
+    Exchange abstraction with fallback support.
+
+    Binance remains the primary source.
+    """
+
+    def __init__(
+        self,
+        settings: Settings,
+    ):
         self.settings = settings
+
         self.collectors = {
-            'binance': BinanceDataCollector(settings),
+            "binance": BinanceDataCollector(
+                settings
+            ),
         }
-        
-    async def fetch_data(self, symbol: str, **kwargs) -> Optional[pd.DataFrame]:
-        for exchange_name, collector in self.collectors.items():
+
+    async def fetch_data(
+        self,
+        symbol: str,
+        **kwargs,
+    ) -> Optional[pd.DataFrame]:
+        """Fetch complete market data with exchange fallback."""
+
+        for (
+            exchange_name,
+            collector,
+        ) in self.collectors.items():
+
             try:
-                data = await collector.fetch_complete_data(symbol, **kwargs)
-                if data is not None and len(data) > 0:
-                    logger.info(f"✅ Data fetched from {exchange_name} for {symbol}")
+
+                data = await collector.fetch_complete_data(
+                    symbol,
+                    **kwargs,
+                )
+
+                if (
+                    data is not None
+                    and not data.empty
+                ):
+
+                    logger.info(
+                        f"Data fetched from "
+                        f"{exchange_name} "
+                        f"for {symbol}"
+                    )
+
                     return data
-            except Exception as e:
-                logger.warning(f"Failed to fetch from {exchange_name}: {e}")
-                
-        logger.error(f"❌ All data sources failed for {symbol}")
+
+            except asyncio.CancelledError:
+                raise
+
+            except Exception as exc:
+
+                logger.warning(
+                    f"{exchange_name} complete "
+                    f"data failed for {symbol}: "
+                    f"{exc}"
+                )
+
+        logger.error(
+            f"All data sources failed for {symbol}"
+        )
+
         return None
-    
-    async def fetch_historical_data(self, symbol: str, **kwargs) -> Optional[pd.DataFrame]:
-        for exchange_name, collector in self.collectors.items():
+
+    async def fetch_historical_data(
+        self,
+        symbol: str,
+        **kwargs,
+    ) -> Optional[pd.DataFrame]:
+        """Fetch OHLCV data with exchange fallback."""
+
+        for (
+            exchange_name,
+            collector,
+        ) in self.collectors.items():
+
             try:
-                data = await collector.fetch_historical_data(symbol, **kwargs)
-                if data is not None and len(data) > 0:
+
+                data = await collector.fetch_historical_data(
+                    symbol,
+                    **kwargs,
+                )
+
+                if (
+                    data is not None
+                    and not data.empty
+                ):
+
+                    logger.info(
+                        f"OHLCV fetched from "
+                        f"{exchange_name} "
+                        f"for {symbol}"
+                    )
+
                     return data
-            except Exception as e:
-                logger.warning(f"Failed to fetch OHLCV from {exchange_name}: {e}")
-        
-        logger.error(f"❌ All OHLCV sources failed for {symbol}")
+
+            except asyncio.CancelledError:
+                raise
+
+            except Exception as exc:
+
+                logger.warning(
+                    f"{exchange_name} OHLCV "
+                    f"failed for {symbol}: {exc}"
+                )
+
+        logger.error(
+            f"All OHLCV sources failed for {symbol}"
+        )
+
         return None
+
+    async def close(self) -> None:
+        """Close all exchange collectors."""
+
+        for collector in self.collectors.values():
+
+            try:
+                await collector.close()
+
+            except Exception as exc:
+
+                logger.warning(
+                    f"Error closing collector: {exc}"
+                )

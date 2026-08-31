@@ -5,7 +5,7 @@ Production logger with minimal output and structured logging
 
 import logging
 import sys
-from logging.handlers import RotatingFileHandler
+from src.utils.safe_logger import SafeRotatingFileHandler
 import os
 
 
@@ -32,10 +32,11 @@ def setup_production_logging():
     root_logger.addHandler(console_handler)
 
     # File handler - ALL logs to file
-    file_handler = RotatingFileHandler(
+    file_handler = SafeRotatingFileHandler(
         "logs/smartcrypto.log",
         maxBytes=10_000_000,  # 10MB
-        backupCount=5
+        backupCount=5,
+        delay=True
     )
     file_handler.setLevel(logging.DEBUG)
     file_formatter = logging.Formatter(
