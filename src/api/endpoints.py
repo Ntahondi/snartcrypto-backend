@@ -1096,6 +1096,8 @@ async def history(
         result = await call_service(
             manager,
             [
+                "get_recent_signals",
+                "get_signals",
                 "get_history",
                 "get_trade_history",
                 "get_trades",

@@ -53,6 +53,10 @@ data/model4/MODEL4_STRATEGY_DETECTOR_V1/CONTROLLED_TEST_V1/
 data/model4/MODEL4_STRATEGY_DETECTOR_V1/*.parquet
 data/model4/MODEL4_STRATEGY_DETECTOR_V1/*.json
 
+# Keep only the runtime Model 4 package & individual models
+!data/model4/MODEL4_STRATEGY_DETECTOR_V1/MODEL4_STRATEGY_DETECTOR_V1_PACKAGE.joblib
+!data/model4/MODEL4_STRATEGY_DETECTOR_V1/models/*.joblib
+
 # ------------------------------------------------------------------------------
 # 5. LOCAL RUNTIME DATABASES & LOGS (MOUNTED VIA VOLUMES)
 # ------------------------------------------------------------------------------

@@ -1,25 +1,20 @@
-
 services:
-  snartcrypto-bot:
+  smartcrypto-bot:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: snartcrypto-ai-v3
+    container_name: smartcrypto-ai-v3
     restart: unless-stopped
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONIOENCODING=utf-8
       - LOG_LEVEL=INFO
-      - ENABLE_REAL_TRADING=${ENABLE_REAL_TRADING:-false}
-      - USE_TESTNET=${USE_TESTNET:-false}
-      - BINANCE_API_KEY=${BINANCE_API_KEY:-}
-      - BINANCE_API_SECRET=${BINANCE_API_SECRET:-}
     volumes:
       # Persistent storage mounts (survives container rebuilds)
-      - ./data:/app/data
-      - ./models:/app/models
       - ./positions:/app/positions
       - ./signal_history:/app/signal_history
       - ./logs:/app/logs
@@ -28,4 +23,5 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
+      start_period: 40s
       retries: 3

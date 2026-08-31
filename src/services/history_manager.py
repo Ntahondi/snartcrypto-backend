@@ -1113,6 +1113,100 @@ class HistoryManager:
 
             return []
 
+    def get_history(
+        self,
+        symbol: Optional[str] = None,
+        hours: int = 720,
+        limit: int = 100,
+        include_closed: bool = True,
+        **kwargs: Any,
+    ) -> List[Dict]:
+        """REST API adapter to get trading/signal history."""
+        return self.get_recent_signals(
+            symbol=symbol,
+            hours=hours,
+            limit=limit,
+            include_closed=include_closed,
+        )
+
+    def get_trade_history(
+        self,
+        symbol: Optional[str] = None,
+        hours: int = 720,
+        limit: int = 100,
+        include_closed: bool = True,
+        **kwargs: Any,
+    ) -> List[Dict]:
+        """REST API adapter to get trade history."""
+        return self.get_recent_signals(
+            symbol=symbol,
+            hours=hours,
+            limit=limit,
+            include_closed=include_closed,
+        )
+
+    def get_trades(
+        self,
+        symbol: Optional[str] = None,
+        hours: int = 720,
+        limit: int = 100,
+        include_closed: bool = True,
+        **kwargs: Any,
+    ) -> List[Dict]:
+        """REST API adapter to get trades."""
+        return self.get_recent_signals(
+            symbol=symbol,
+            hours=hours,
+            limit=limit,
+            include_closed=include_closed,
+        )
+
+    def get_closed_trades(
+        self,
+        symbol: Optional[str] = None,
+        hours: int = 720,
+        limit: int = 100,
+        **kwargs: Any,
+    ) -> List[Dict]:
+        """REST API adapter to get closed trades."""
+        recent = self.get_recent_signals(
+            symbol=symbol,
+            hours=hours,
+            limit=limit,
+            include_closed=True,
+        )
+        return [
+            s for s in recent
+            if str(s.get("outcome", "")).upper() in {"WIN", "LOSS", "CLOSED"}
+        ]
+
+    def get_signals(
+        self,
+        symbol: Optional[str] = None,
+        hours: int = 720,
+        limit: int = 100,
+        include_closed: bool = True,
+        **kwargs: Any,
+    ) -> List[Dict]:
+        """REST API adapter to get signals."""
+        return self.get_recent_signals(
+            symbol=symbol,
+            hours=hours,
+            limit=limit,
+            include_closed=include_closed,
+        )
+
+    def get_performance(
+        self,
+        symbol: Optional[str] = None,
+        days: int = 30,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """REST API adapter to get performance metrics."""
+        if symbol:
+            return self.calculate_symbol_performance(symbol, days=days)
+        return self.get_performance_summary()
+
     def get_signal(
         self,
         signal_id: str,
