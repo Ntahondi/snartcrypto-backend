@@ -1220,11 +1220,15 @@ class MarketAnalyzer:
         )
 
         try:
+            # -----------------------------------------------------
+            # 1. Always broadcast valid trading signals to Telegram VIP Channel
+            # -----------------------------------------------------
+            if signal.get("action") in ("BUY", "SELL"):
+                await self._broadcast_signal_safely(signal)
 
             # -----------------------------------------------------
-            # Portfolio unavailable
+            # 2. Portfolio risk validation & execution
             # -----------------------------------------------------
-
             if not self.portfolio_manager:
                 self.logger.warning(
                     f"⚠️ Signal generated for {symbol}, "

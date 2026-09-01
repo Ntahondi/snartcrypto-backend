@@ -181,10 +181,19 @@ class BinanceDataCollector:
             symbol
         )
 
-        url = (
-            f"{self.base_url}"
-            "/api/v3/klines"
-        )
+        candidate_bases = [
+            self.base_url,
+            "https://data-api.binance.vision",
+            "https://api1.binance.com",
+            "https://api2.binance.com",
+            "https://api3.binance.com",
+            self.futures_base_url,
+        ]
+        # Deduplicate while preserving order
+        unique_bases = []
+        for b in candidate_bases:
+            if b and b not in unique_bases:
+                unique_bases.append(b)
 
         params = {
             "symbol": binance_symbol,
@@ -192,25 +201,27 @@ class BinanceDataCollector:
             "limit": min(int(limit), 1000),
         }
 
-        for attempt in range(3):
+        proxy_url = getattr(self.settings, "EXCHANGE_PROXY_URL", None)
+
+        for attempt, base in enumerate(unique_bases[:4]):
+            endpoint = "/fapi/v1/klines" if "fapi.binance.com" in base else "/api/v3/klines"
+            url = f"{base.rstrip('/')}{endpoint}"
 
             try:
-
                 session = await self.get_session()
 
                 async with session.get(
                     url,
                     params=params,
+                    proxy=proxy_url,
                 ) as response:
 
                     if response.status == 200:
-
                         data = await response.json()
 
                         if not data:
                             logger.warning(
-                                f"Empty OHLCV response for "
-                                f"{binance_symbol}"
+                                f"Empty OHLCV response for {binance_symbol}"
                             )
                             return None
 
@@ -221,20 +232,17 @@ class BinanceDataCollector:
                         )
 
                     body = await response.text()
-
                     logger.warning(
-                        f"OHLCV attempt {attempt + 1}/3 failed "
-                        f"for {binance_symbol}: "
-                        f"HTTP {response.status} - {body[:200]}"
+                        f"OHLCV attempt {attempt + 1} ({base}) failed "
+                        f"for {binance_symbol}: HTTP {response.status} - {body[:150]}"
                     )
 
             except asyncio.CancelledError:
                 raise
 
             except Exception as exc:
-
                 logger.warning(
-                    f"OHLCV attempt {attempt + 1}/3 failed "
+                    f"OHLCV attempt {attempt + 1} ({base}) failed "
                     f"for {binance_symbol}: {exc}"
                 )
 

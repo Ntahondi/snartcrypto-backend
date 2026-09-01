@@ -102,8 +102,23 @@ class TelegramService:
             )
         )
 
+        self.custom_api_base = str(
+            getattr(
+                self.settings,
+                "TELEGRAM_API_BASE",
+                "https://api.telegram.org",
+            )
+            or "https://api.telegram.org"
+        ).rstrip("/")
+
+        self.proxy_url = getattr(
+            self.settings,
+            "TELEGRAM_PROXY_URL",
+            None,
+        )
+
         self.api_base = (
-            f"https://api.telegram.org/bot{self.bot_token}"
+            f"{self.custom_api_base}/bot{self.bot_token}"
             if self.bot_token
             else ""
         )
@@ -115,9 +130,10 @@ class TelegramService:
         self._broadcasted_signal_ids: set[str] = set()
 
         logger.info(
-            "TelegramService initialized | enabled=%s | channel_configured=%s",
+            "TelegramService initialized | enabled=%s | channel_configured=%s | base=%s",
             self.enable_telegram,
             bool(self.channel_id),
+            self.custom_api_base,
         )
 
     # =====================================================================
@@ -128,16 +144,20 @@ class TelegramService:
         """Create the reusable HTTP client."""
 
         if self._client is None:
-            self._client = httpx.AsyncClient(
-                timeout=httpx.Timeout(
+            kwargs: Dict[str, Any] = {
+                "timeout": httpx.Timeout(
                     self.DEFAULT_TIMEOUT,
-                    connect=5.0,
+                    connect=10.0,
                 ),
-                limits=httpx.Limits(
+                "limits": httpx.Limits(
                     max_connections=10,
                     max_keepalive_connections=5,
                 ),
-            )
+            }
+            if self.proxy_url:
+                kwargs["proxy"] = self.proxy_url
+
+            self._client = httpx.AsyncClient(**kwargs)
 
     async def close(self) -> None:
         """Close the reusable HTTP client."""

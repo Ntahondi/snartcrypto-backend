@@ -32,6 +32,16 @@ secrets/
 credentials/
 *.pem
 *.key
+*.jks
+*.keystore
+key.properties
+*.p8
+*.mobileprovision
+
+# ------------------------------------------------------------------------------
+# 3.1 FRONTEND & SEPARATE CLIENT REPOSITORIES
+# ------------------------------------------------------------------------------
+Snartcrypto-frontend/
 
 # ------------------------------------------------------------------------------
 # 4. LARGE OFFLINE DATASETS & PARQUET FILES

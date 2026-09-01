@@ -12,6 +12,11 @@ secrets/
 credentials/
 *.pem
 *.key
+*.jks
+*.keystore
+key.properties
+*.p8
+*.mobileprovision
 
 # ------------------------------------------------------------------------------
 # 2. PYTHON VIRTUAL ENVIRONMENTS & COMPILATION CACHES

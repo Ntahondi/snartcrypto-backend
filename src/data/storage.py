@@ -181,7 +181,95 @@ class DataStorage:
                 last_updated TEXT DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # USERS TABLE
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id TEXT PRIMARY KEY,
+                email TEXT UNIQUE,
+                password_hash TEXT,
+                auth_provider TEXT DEFAULT 'email',
+                provider_id TEXT,
+                role TEXT DEFAULT 'guest',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                last_login TEXT
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_email ON users(email)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_provider ON users(auth_provider, provider_id)')
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # SUBSCRIPTIONS TABLE
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                subscription_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                plan_id TEXT NOT NULL,
+                status TEXT DEFAULT 'active',
+                started_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                payment_method TEXT DEFAULT 'crypto',
+                amount_paid REAL NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sub_user ON subscriptions(user_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sub_status ON subscriptions(status)')
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # INVOICES TABLE (CRYPTO & FIAT)
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS invoices (
+                invoice_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                plan_id TEXT NOT NULL,
+                amount_usd REAL NOT NULL,
+                currency TEXT DEFAULT 'USDT',
+                network TEXT DEFAULT 'TRC20',
+                crypto_address TEXT NOT NULL,
+                status TEXT DEFAULT 'PENDING',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                expires_at TEXT NOT NULL,
+                confirmed_at TEXT,
+                tx_hash TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_invoice_user ON invoices(user_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_invoice_status ON invoices(status)')
         
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # SEED MASTER ADMIN USER IF NOT PRESENT
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        try:
+            admin_email = "admin@snartpace.com"
+            cursor.execute('SELECT user_id FROM users WHERE LOWER(email) = LOWER(?)', (admin_email,))
+            if not cursor.fetchone():
+                import secrets, hashlib
+                salt = secrets.token_hex(16)
+                key = hashlib.pbkdf2_hmac(
+                    'sha256',
+                    "Snartpace_2026".encode('utf-8'),
+                    salt.encode('utf-8'),
+                    100000
+                ).hex()
+                admin_pw_hash = f"{salt}${key}"
+                cursor.execute(
+                    '''
+                    INSERT INTO users (user_id, email, password_hash, auth_provider, provider_id, role, last_login)
+                    VALUES (?, ?, ?, 'email', NULL, 'admin', CURRENT_TIMESTAMP)
+                    ''',
+                    ("admin_snartpace_master", admin_email, admin_pw_hash)
+                )
+                logger.info(f"👑 Master admin account seeded: {admin_email} (Role: admin)")
+        except Exception as seed_err:
+            logger.debug(f"Admin seeding pass: {seed_err}")
+
         conn.commit()
         conn.close()
         logger.info(f"✅ Database initialized at: {self.db_path}")
@@ -488,6 +576,39 @@ class DataStorage:
                         except json.JSONDecodeError:
                             continue
         return signals
+
+    def get_celebration_wins(self, limit: int = 10) -> List[Dict]:
+        """Query real closed winning trades for social proof celebrations."""
+        with self._lock:
+            try:
+                if self.use_db and self.db_path.exists():
+                    conn = sqlite3.connect(self.db_path)
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        SELECT signal_id, symbol, action, pnl_percentage, pnl, entry_price, exit_price, confidence, timestamp
+                        FROM signals
+                        WHERE (outcome IN ('WIN', 'CLOSED') OR pnl_percentage > 0)
+                          AND (pnl_percentage > 0 OR pnl > 0)
+                        ORDER BY pnl_percentage DESC, timestamp DESC
+                        LIMIT ?
+                    ''', (limit,))
+                    rows = cursor.fetchall()
+                    conn.close()
+                    if rows:
+                        return [dict(r) for r in rows]
+                
+                signals = self.get_all_signals()
+                wins = [
+                    s for s in signals 
+                    if (s.get('outcome') in ('WIN', 'CLOSED') or (s.get('pnl_percentage') or 0) > 0)
+                    and ((s.get('pnl_percentage') or 0) > 0 or (s.get('pnl') or 0) > 0)
+                ]
+                wins.sort(key=lambda x: (x.get('pnl_percentage') or 0) or (x.get('pnl') or 0), reverse=True)
+                return wins[:limit]
+            except Exception as e:
+                logger.error(f"Error fetching celebration wins from storage: {e}")
+                return []
     
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # PATTERN DRAWING OPERATIONS
@@ -1057,3 +1178,343 @@ class DataStorage:
             if self.save_signal(signal):
                 count += 1
         return count
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # USER MANAGEMENT
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    def create_user(
+        self,
+        user_id: str,
+        email: Optional[str] = None,
+        password_hash: Optional[str] = None,
+        auth_provider: str = 'email',
+        provider_id: Optional[str] = None,
+        role: str = 'guest',
+    ) -> bool:
+        """Create a new user record."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO users (user_id, email, password_hash, auth_provider, provider_id, role, last_login)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (user_id, email, password_hash, auth_provider, provider_id, role, datetime.utcnow().isoformat())
+            )
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Error creating user: {e}")
+            return False
+
+    def get_user_by_id(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve user by user_id."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
+            row = cursor.fetchone()
+            conn.close()
+            return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"Error fetching user by ID: {e}")
+            return None
+
+    def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
+        """Retrieve user by email."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM users WHERE LOWER(email) = LOWER(?)', (email,))
+            row = cursor.fetchone()
+            conn.close()
+            return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"Error fetching user by email: {e}")
+            return None
+
+    def get_user_by_provider(self, auth_provider: str, provider_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve user by auth provider and provider ID."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT * FROM users WHERE auth_provider = ? AND provider_id = ?',
+                (auth_provider, provider_id)
+            )
+            row = cursor.fetchone()
+            conn.close()
+            return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"Error fetching user by provider: {e}")
+            return None
+
+    def update_user_role(self, user_id: str, role: str) -> bool:
+        """Update a user's role (guest, pro, vip, vvip, admin)."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('UPDATE users SET role = ? WHERE user_id = ?', (role, user_id))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Error updating user role: {e}")
+            return False
+
+    def update_user_last_login(self, user_id: str) -> bool:
+        """Update last login timestamp."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                'UPDATE users SET last_login = ? WHERE user_id = ?',
+                (datetime.utcnow().isoformat(), user_id)
+            )
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Error updating last login: {e}")
+            return False
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # SUBSCRIPTION MANAGEMENT
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    def create_subscription(
+        self,
+        subscription_id: str,
+        user_id: str,
+        plan_id: str,
+        status: str = 'active',
+        started_at: Optional[str] = None,
+        expires_at: Optional[str] = None,
+        payment_method: str = 'crypto',
+        amount_paid: float = 20.0,
+    ) -> bool:
+        """Create a user subscription record."""
+        try:
+            now = started_at or datetime.utcnow().isoformat()
+            exp = expires_at or (datetime.utcnow() + timedelta(days=30)).isoformat()
+
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO subscriptions (subscription_id, user_id, plan_id, status, started_at, expires_at, payment_method, amount_paid)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (subscription_id, user_id, plan_id, status, now, exp, payment_method, amount_paid)
+            )
+            # Also update the user's role accordingly
+            role_map = {
+                'pro_20': 'pro',
+                'vip_49': 'vip',
+                'vvip_99': 'vvip',
+            }
+            new_role = role_map.get(plan_id, 'pro')
+            cursor.execute('UPDATE users SET role = ? WHERE user_id = ?', (new_role, user_id))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Error creating subscription: {e}")
+            return False
+
+    def get_active_subscription(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Get the current active subscription for a user."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT * FROM subscriptions 
+                WHERE user_id = ? AND status = 'active'
+                ORDER BY created_at DESC LIMIT 1
+                ''',
+                (user_id,)
+            )
+            row = cursor.fetchone()
+            conn.close()
+            return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"Error fetching active subscription: {e}")
+            return None
+
+    def cancel_active_subscription(self, user_id: str) -> bool:
+        """Cancel an active subscription and downgrade user role to guest."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE subscriptions SET status = 'cancelled' WHERE user_id = ? AND status = 'active'",
+                (user_id,)
+            )
+            cursor.execute("UPDATE users SET role = 'guest' WHERE user_id = ?", (user_id,))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Error cancelling subscription: {e}")
+            return False
+
+    def delete_user(self, user_id: str) -> bool:
+        """Permanently delete a user account and purge all associated records."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM invoices WHERE user_id = ?", (user_id,))
+            cursor.execute("DELETE FROM subscriptions WHERE user_id = ?", (user_id,))
+            cursor.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting user {user_id}: {e}")
+            return False
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # INVOICE MANAGEMENT (CRYPTO & FIAT)
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    def create_invoice(
+        self,
+        invoice_id: str,
+        user_id: str,
+        plan_id: str,
+        amount_usd: float,
+        currency: str = 'USDT',
+        network: str = 'TRC20',
+        crypto_address: str = '',
+        expires_at: Optional[str] = None,
+    ) -> bool:
+        """Create a payment invoice."""
+        try:
+            exp = expires_at or (datetime.utcnow() + timedelta(hours=2)).isoformat()
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO invoices (invoice_id, user_id, plan_id, amount_usd, currency, network, crypto_address, status, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)
+                ''',
+                (invoice_id, user_id, plan_id, amount_usd, currency, network, crypto_address, exp)
+            )
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Error creating invoice: {e}")
+            return False
+
+    def get_invoice(self, invoice_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve an invoice by ID."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM invoices WHERE invoice_id = ?', (invoice_id,))
+            row = cursor.fetchone()
+            conn.close()
+            return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"Error fetching invoice: {e}")
+            return None
+
+    def confirm_invoice(self, invoice_id: str, tx_hash: Optional[str] = None) -> bool:
+        """Mark an invoice as confirmed and automatically provision subscription."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM invoices WHERE invoice_id = ?', (invoice_id,))
+            inv = cursor.fetchone()
+            if not inv:
+                conn.close()
+                return False
+
+            now = datetime.utcnow().isoformat()
+            cursor.execute(
+                '''
+                UPDATE invoices 
+                SET status = 'CONFIRMED', confirmed_at = ?, tx_hash = ?
+                WHERE invoice_id = ?
+                ''',
+                (now, tx_hash or '0x' + invoice_id[:16], invoice_id)
+            )
+            conn.commit()
+            conn.close()
+
+            # Provision subscription
+            sub_id = f"sub_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{inv['user_id'][:6]}"
+            self.create_subscription(
+                subscription_id=sub_id,
+                user_id=inv['user_id'],
+                plan_id=inv['plan_id'],
+                status='active',
+                payment_method='crypto',
+                amount_paid=inv['amount_usd'],
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error confirming invoice: {e}")
+            return False
+
+    def list_user_invoices(self, user_id: str) -> List[Dict[str, Any]]:
+        """List all invoices for a user."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT * FROM invoices WHERE user_id = ? ORDER BY created_at DESC LIMIT 50',
+                (user_id,)
+            )
+            rows = cursor.fetchall()
+            conn.close()
+            return [dict(r) for r in rows]
+        except Exception as e:
+            logger.error(f"Error listing user invoices: {e}")
+            return []
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # CELEBRATION WINS FEED
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    def get_celebration_wins(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Fetch top historical winning trades for user celebration & social proof.
+        """
+        try:
+            if not self.use_db:
+                return []
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT 
+                    signal_id, symbol, action, price, confidence, signal_strength,
+                    timestamp, outcome, pnl_percentage, pnl, entry_price, exit_price,
+                    exit_time, direction_1h
+                FROM signals
+                WHERE (outcome = 'WIN' OR pnl_percentage > 0 OR pnl > 0)
+                ORDER BY pnl_percentage DESC, timestamp DESC
+                LIMIT ?
+                ''',
+                (limit,)
+            )
+            rows = cursor.fetchall()
+            conn.close()
+            return [dict(r) for r in rows]
+        except Exception as e:
+            logger.error(f"Error fetching celebration wins: {e}")
+            return []

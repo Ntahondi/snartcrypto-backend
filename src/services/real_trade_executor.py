@@ -416,43 +416,48 @@ class RealTradeExecutor:
 
             return None
 
-        exchange = ccxt.binanceusdm(
-            {
-                "apiKey": api_key,
-                "secret": api_secret,
-                "enableRateLimit": True,
-                "options": {
-                    "defaultType": "future",
-                    "adjustForTimeDifference": True,
-                },
-            }
-        )
+        exchange_config = {
+            "apiKey": api_key,
+            "secret": api_secret,
+            "enableRateLimit": True,
+            "options": {
+                "defaultType": "future",
+                "adjustForTimeDifference": True,
+                "recvWindow": 20000,
+                "fetchCurrencies": False,
+            },
+        }
+
+        proxy_url = getattr(self.settings, "EXCHANGE_PROXY_URL", None)
+        if proxy_url:
+            exchange_config["aiohttp_proxy"] = proxy_url
+
+        exchange = ccxt.binanceusdm(exchange_config)
+        exchange.has['fetchCurrencies'] = False
 
         try:
+            binance_testnet = getattr(self.settings, "BINANCE_USE_TESTNET", None)
+            use_testnet = self.use_testnet if binance_testnet is None else binance_testnet
 
-            if self.use_testnet:
+            if use_testnet:
+                exchange.set_sandbox_mode(True)
 
-                exchange.set_sandbox_mode(
-                    True
-                )
+            try:
+                await exchange.load_time_difference()
+            except Exception as e:
+                logger.debug(f"Binance time sync fallback: {e}")
 
             await exchange.load_markets()
-
             await exchange.fetch_balance()
 
             logger.info(
-                "✅ Binance USD-M Futures "
-                "connection established."
+                "✅ Binance USD-M Futures connection established."
             )
 
             return exchange
 
         except Exception:
-
-            await self._safe_close_exchange(
-                exchange
-            )
-
+            await self._safe_close_exchange(exchange)
             raise
 
     async def _create_bybit(self):
@@ -477,51 +482,53 @@ class RealTradeExecutor:
         ).strip()
 
         if not api_key or not api_secret:
-
             logger.warning(
-                "⚠️ Bybit API credentials "
-                "are missing."
+                "⚠️ Bybit API credentials are missing."
             )
-
             return None
 
-        exchange = ccxt.bybit(
-            {
-                "apiKey": api_key,
-                "secret": api_secret,
-                "enableRateLimit": True,
-                "options": {
-                    "defaultType": "linear",
-                    "adjustForTimeDifference": True,
-                },
-            }
-        )
+        bybit_config = {
+            "apiKey": api_key,
+            "secret": api_secret,
+            "enableRateLimit": True,
+            "options": {
+                "defaultType": "linear",
+                "adjustForTimeDifference": True,
+                "recvWindow": 20000,
+                "fetchCurrencies": False,
+            },
+        }
+
+        proxy_url = getattr(self.settings, "EXCHANGE_PROXY_URL", None)
+        if proxy_url:
+            bybit_config["aiohttp_proxy"] = proxy_url
+
+        exchange = ccxt.bybit(bybit_config)
+        exchange.has['fetchCurrencies'] = False
 
         try:
+            bybit_testnet = getattr(self.settings, "BYBIT_USE_TESTNET", None)
+            use_testnet = self.use_testnet if bybit_testnet is None else bybit_testnet
 
-            if self.use_testnet:
+            if use_testnet:
+                exchange.set_sandbox_mode(True)
 
-                exchange.set_sandbox_mode(
-                    True
-                )
+            try:
+                await exchange.load_time_difference()
+            except Exception as e:
+                logger.debug(f"Bybit time sync fallback: {e}")
 
             await exchange.load_markets()
-
             await exchange.fetch_balance()
 
             logger.info(
-                "✅ Bybit USDT Linear Futures "
-                "connection established."
+                "✅ Bybit USDT Linear Futures connection established."
             )
 
             return exchange
 
         except Exception:
-
-            await self._safe_close_exchange(
-                exchange
-            )
-
+            await self._safe_close_exchange(exchange)
             raise
 
     # =========================================================

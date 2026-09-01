@@ -61,7 +61,7 @@ from pydantic import Field
 # PROJECT PATHS
 # ============================================================================
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 ENV_FILE = PROJECT_ROOT / ".env"
 YAML_CONFIG_FILE = PROJECT_ROOT / "config.yaml"
@@ -158,6 +158,51 @@ class Settings(BaseSettings):
         description="Internal API authentication key.",
     )
 
+    JWT_SECRET_KEY: str = Field(
+        default="",
+        description="Secret key for JWT HS256 token signing. Must be set via .env in production.",
+    )
+
+    JWT_ALGORITHM: str = Field(
+        default="HS256",
+        description="JWT cryptographic algorithm.",
+    )
+
+    ACCESS_TOKEN_EXPIRE_DAYS: int = Field(
+        default=30,
+        description="JWT access token lifetime in days.",
+    )
+
+    REDIS_URL: str = Field(
+        default="redis://localhost:6379/0",
+        description="Redis connection URL for high-performance caching.",
+    )
+
+    CACHE_TTL_SECONDS: int = Field(
+        default=10,
+        description="Default caching time-to-live for API responses.",
+    )
+
+    RATE_LIMIT_PER_MINUTE: int = Field(
+        default=120,
+        description="General API request rate limit per minute.",
+    )
+
+    RATE_LIMIT_AUTH_PER_MINUTE: int = Field(
+        default=10,
+        description="Strict auth request rate limit per minute to prevent brute-force.",
+    )
+
+    SNAILGUARD_ENABLED: bool = Field(
+        default=True,
+        description="Enable SnailGuard AI WAF and SQL/XSS threat shielding.",
+    )
+
+    SNAILGUARD_ECONOMIC_WARFARE: bool = Field(
+        default=True,
+        description="Enable SnailGuard economic warfare penalties for malicious bots.",
+    )
+
     API_PREFIX: str = Field(
         default="/api/v1",
         description="REST API prefix.",
@@ -213,6 +258,46 @@ class Settings(BaseSettings):
         description="Binance API secret.",
     )
 
+    ENABLE_BINANCE: bool = Field(
+        default=True,
+        description="Enable Binance exchange execution.",
+    )
+
+    BINANCE_USE_TESTNET: Optional[bool] = Field(
+        default=None,
+        description="Override testnet mode specifically for Binance.",
+    )
+
+    ENABLE_BYBIT: bool = Field(
+        default=True,
+        description="Enable Bybit exchange execution.",
+    )
+
+    BYBIT_API_KEY: str = Field(
+        default="",
+        description="Bybit API key.",
+    )
+
+    BYBIT_API_SECRET: str = Field(
+        default="",
+        description="Bybit API secret.",
+    )
+
+    BYBIT_API_BASE: str = Field(
+        default="https://api.bybit.com",
+        description="Bybit REST API base URL.",
+    )
+
+    BYBIT_USE_TESTNET: Optional[bool] = Field(
+        default=None,
+        description="Override testnet mode specifically for Bybit.",
+    )
+
+    EXCHANGE_PROXY_URL: Optional[str] = Field(
+        default=None,
+        description="Optional HTTP/SOCKS proxy for exchange API requests.",
+    )
+
     DEFAULT_LEVERAGE: int = Field(
         default=3,
         ge=1,
@@ -222,6 +307,30 @@ class Settings(BaseSettings):
     MARGIN_TYPE: str = Field(
         default="ISOLATED",
         description="Default futures margin mode.",
+    )
+
+    # ------------------------------------------------------------------------
+    # MONETIZATION & CRYPTO PAYMENT WALLETS
+    # ------------------------------------------------------------------------
+
+    WALLET_TRC20_ADDRESS: str = Field(
+        default="TYDzsYUb4r8ZJ3pA4rXvWzR8G9cK8v1a2b",
+        description="Your personal USDT (TRC20) deposit wallet address.",
+    )
+
+    WALLET_BSC_ADDRESS: str = Field(
+        default="0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
+        description="Your personal USDT / USDC / BNB (BSC BEP20) wallet address.",
+    )
+
+    WALLET_POLYGON_ADDRESS: str = Field(
+        default="0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
+        description="Your personal Polygon (MATIC) wallet address.",
+    )
+
+    WALLET_ERC20_ADDRESS: str = Field(
+        default="0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
+        description="Your personal Ethereum (ERC20) wallet address.",
     )
 
     # ------------------------------------------------------------------------
@@ -242,6 +351,14 @@ class Settings(BaseSettings):
 
     TELEGRAM_ADMIN_CHAT_ID: str = Field(
         default="",
+    )
+
+    TELEGRAM_API_BASE: str = Field(
+        default="https://api.telegram.org",
+    )
+
+    TELEGRAM_PROXY_URL: Optional[str] = Field(
+        default=None,
     )
 
     # ------------------------------------------------------------------------
