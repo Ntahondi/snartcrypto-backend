@@ -214,6 +214,50 @@ class Settings(BaseSettings):
     )
 
     # ------------------------------------------------------------------------
+    # SMTP & TRANSACTIONAL EMAIL
+    # ------------------------------------------------------------------------
+
+    SMTP_HOST: str = Field(
+        default="smtp.gmail.com",
+        description="SMTP server host (e.g. smtp.gmail.com, smtp-relay.brevo.com).",
+    )
+
+    SMTP_PORT: int = Field(
+        default=587,
+        description="SMTP server port (usually 587 for TLS, 465 for SSL).",
+    )
+
+    SMTP_USER: str = Field(
+        default="",
+        description="SMTP username / email address.",
+    )
+
+    SMTP_PASSWORD: str = Field(
+        default="",
+        description="SMTP password or App Password.",
+    )
+
+    SMTP_FROM_EMAIL: str = Field(
+        default="noreply@smartcrypto.ai",
+        description="Sender email address.",
+    )
+
+    SMTP_FROM_NAME: str = Field(
+        default="SmartCrypto AI",
+        description="Sender display name.",
+    )
+
+    SMTP_USE_TLS: bool = Field(
+        default=True,
+        description="Enable STARTTLS for SMTP connection.",
+    )
+
+    SMTP_SIMULATION_MODE: bool = Field(
+        default=False,
+        description="Force email simulation mode (prints OTP to console even if SMTP is configured).",
+    )
+
+    # ------------------------------------------------------------------------
     # EXCHANGE
     # ------------------------------------------------------------------------
 

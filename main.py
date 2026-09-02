@@ -76,31 +76,18 @@ async def lifespan(app: FastAPI):
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         if market_analyzer_instance.portfolio_manager is None:
             try:
-                from src.core.trading_profiles import (
-                    get_profile_day_trader, 
-                    get_profile_scalper,
-                    get_profile_swing,
-                    get_profile_position,
-                )
+                from src.core.trading_profiles import get_profile
                 from src.services.portfolio_manager import PortfolioManager
                 
-                profile_name = getattr(settings, 'TRADING_PROFILE', 'day_trader')
-                
-                profile_map = {
-                    'scalper': get_profile_scalper,
-                    'day_trader': get_profile_day_trader,
-                    'swing': get_profile_swing,
-                    'position': get_profile_position,
-                }
-                
-                default_profile = profile_map.get(profile_name, get_profile_day_trader)()
+                profile_name = getattr(settings, 'TRADING_PROFILE', 'test')
+                default_profile = get_profile(profile_name)
                 
                 market_analyzer_instance.portfolio_manager = PortfolioManager(
                     initial_capital=settings.INITIAL_CAPITAL,
                     profile=default_profile,
                     history_manager=market_analyzer_instance.signal_generator.history_manager if market_analyzer_instance.signal_generator else None
                 )
-                logger.info(f"💰 Portfolio Manager initialized with profile: {default_profile.name}")
+                logger.info(f"💰 Portfolio Manager initialized with profile: {default_profile.trading_style.value} (Max hold: {default_profile.max_holding_hours}h)")
             except Exception as e:
                 logger.error(f"❌ Failed to initialize portfolio manager: {e}")
         

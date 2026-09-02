@@ -7,6 +7,10 @@ import json
 import os
 import sqlite3
 import threading
+import secrets
+import hashlib
+import hmac
+import base64
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Union
@@ -193,12 +197,40 @@ class DataStorage:
                 auth_provider TEXT DEFAULT 'email',
                 provider_id TEXT,
                 role TEXT DEFAULT 'guest',
+                is_verified INTEGER DEFAULT 0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 last_login TEXT
             )
         ''')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_email ON users(email)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_provider ON users(auth_provider, provider_id)')
+
+        # Safe schema migration for is_verified on existing DB
+        try:
+            cursor.execute("PRAGMA table_info(users)")
+            cols = [col[1] for col in cursor.fetchall()]
+            if 'is_verified' not in cols:
+                cursor.execute("ALTER TABLE users ADD COLUMN is_verified INTEGER DEFAULT 0")
+        except Exception:
+            pass
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # PASSWORD RESETS & OTP TABLE
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS password_resets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT NOT NULL,
+                otp_code TEXT NOT NULL,
+                token TEXT NOT NULL,
+                purpose TEXT DEFAULT 'reset',
+                expires_at TEXT NOT NULL,
+                used INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_reset_email_purpose ON password_resets(email, purpose, used)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_reset_token ON password_resets(token)')
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # SUBSCRIPTIONS TABLE
@@ -242,6 +274,60 @@ class DataStorage:
         ''')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_invoice_user ON invoices(user_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_invoice_status ON invoices(status)')
+        
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # USER EXCHANGE KEYS TABLE (VVIP REAL TRADING)
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_exchange_keys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                exchange TEXT NOT NULL,
+                api_key_masked TEXT NOT NULL,
+                api_key_encrypted TEXT NOT NULL,
+                api_secret_encrypted TEXT NOT NULL,
+                passphrase_encrypted TEXT,
+                is_testnet INTEGER DEFAULT 0,
+                is_active INTEGER DEFAULT 1,
+                auto_trade_enabled INTEGER DEFAULT 0,
+                max_position_size_usd REAL DEFAULT 500.0,
+                status TEXT DEFAULT 'ACTIVE',
+                last_tested_at TEXT,
+                last_error TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_exchange_keys_user ON user_exchange_keys(user_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_exchange_keys_exchange ON user_exchange_keys(exchange)')
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # USER RISK SETTINGS & CONSENT (VVIP REAL TRADING)
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_risk_settings (
+                user_id TEXT PRIMARY KEY,
+                trading_style TEXT DEFAULT 'day_trader',
+                risk_tolerance TEXT DEFAULT 'moderate',
+                sizing_mode TEXT DEFAULT 'kelly',
+                kelly_fraction REAL DEFAULT 0.25,
+                max_leverage INTEGER DEFAULT 3,
+                stop_loss_atr_mult REAL DEFAULT 1.5,
+                take_profit_atr_mult REAL DEFAULT 3.0,
+                use_trailing_stop INTEGER DEFAULT 1,
+                min_confidence REAL DEFAULT 0.65,
+                require_ensemble_agreement INTEGER DEFAULT 1,
+                max_open_positions INTEGER DEFAULT 5,
+                risk_consent_accepted INTEGER DEFAULT 0,
+                risk_consent_at TEXT,
+                risk_consent_ip TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_risk_settings_consent ON user_risk_settings(risk_consent_accepted)')
         
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # SEED MASTER ADMIN USER IF NOT PRESENT
@@ -1284,6 +1370,127 @@ class DataStorage:
             logger.error(f"Error updating last login: {e}")
             return False
 
+    def update_user_password(self, email_or_user_id: str, password_hash: str) -> bool:
+        """Update a user's password hash."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE users 
+                SET password_hash = ? 
+                WHERE user_id = ? OR LOWER(email) = LOWER(?)
+                ''',
+                (password_hash, email_or_user_id, email_or_user_id)
+            )
+            affected = cursor.rowcount
+            conn.commit()
+            conn.close()
+            return affected > 0
+        except Exception as e:
+            logger.error(f"Error updating user password: {e}")
+            return False
+
+    def set_user_verified(self, email_or_user_id: str, is_verified: bool = True) -> bool:
+        """Mark a user's email address as verified."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE users 
+                SET is_verified = ? 
+                WHERE user_id = ? OR LOWER(email) = LOWER(?)
+                ''',
+                (1 if is_verified else 0, email_or_user_id, email_or_user_id)
+            )
+            affected = cursor.rowcount
+            conn.commit()
+            conn.close()
+            return affected > 0
+        except Exception as e:
+            logger.error(f"Error updating user verified status: {e}")
+            return False
+
+    def create_otp(
+        self,
+        email: str,
+        otp_code: str,
+        purpose: str = "reset",
+        expires_in_minutes: int = 15,
+        token: Optional[str] = None,
+    ) -> str:
+        """Create an expiring OTP for password reset or email verification."""
+        import secrets
+        reset_token = token or secrets.token_urlsafe(32)
+        exp_time = (datetime.utcnow() + timedelta(minutes=expires_in_minutes)).isoformat()
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            # Invalidate any existing unused OTPs for this email and purpose
+            cursor.execute(
+                '''
+                UPDATE password_resets 
+                SET used = 1 
+                WHERE LOWER(email) = LOWER(?) AND purpose = ? AND used = 0
+                ''',
+                (email, purpose)
+            )
+            cursor.execute(
+                '''
+                INSERT INTO password_resets (email, otp_code, token, purpose, expires_at, used)
+                VALUES (?, ?, ?, ?, ?, 0)
+                ''',
+                (email.lower(), otp_code, reset_token, purpose, exp_time)
+            )
+            conn.commit()
+            conn.close()
+            return reset_token
+        except Exception as e:
+            logger.error(f"Error creating OTP: {e}")
+            return reset_token
+
+    def verify_otp(
+        self,
+        email: str,
+        otp_code: str,
+        purpose: str = "reset",
+    ) -> bool:
+        """Verify an OTP code for a given email and purpose. Marks code as used if valid."""
+        try:
+            now_str = datetime.utcnow().isoformat()
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT id, expires_at 
+                FROM password_resets 
+                WHERE LOWER(email) = LOWER(?) AND otp_code = ? AND purpose = ? AND used = 0
+                ORDER BY created_at DESC 
+                LIMIT 1
+                ''',
+                (email, otp_code.strip(), purpose)
+            )
+            row = cursor.fetchone()
+            if not row:
+                conn.close()
+                return False
+
+            reset_id, expires_at = row
+            if expires_at < now_str:
+                # Expired
+                conn.close()
+                return False
+
+            # Mark as used
+            cursor.execute('UPDATE password_resets SET used = 1 WHERE id = ?', (reset_id,))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Error verifying OTP: {e}")
+            return False
+
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # SUBSCRIPTION MANAGEMENT
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1468,6 +1675,30 @@ class DataStorage:
             logger.error(f"Error confirming invoice: {e}")
             return False
 
+    def is_tx_hash_used(self, tx_hash: str, exclude_invoice_id: Optional[str] = None) -> bool:
+        """Check if a blockchain transaction hash has already been redeemed for another invoice."""
+        if not tx_hash:
+            return False
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            if exclude_invoice_id:
+                cursor.execute(
+                    "SELECT 1 FROM invoices WHERE tx_hash = ? AND status = 'CONFIRMED' AND invoice_id != ? LIMIT 1",
+                    (tx_hash, exclude_invoice_id)
+                )
+            else:
+                cursor.execute(
+                    "SELECT 1 FROM invoices WHERE tx_hash = ? AND status = 'CONFIRMED' LIMIT 1",
+                    (tx_hash,)
+                )
+            row = cursor.fetchone()
+            conn.close()
+            return row is not None
+        except Exception as e:
+            logger.error(f"Error checking tx hash usage: {e}")
+            return False
+
     def list_user_invoices(self, user_id: str) -> List[Dict[str, Any]]:
         """List all invoices for a user."""
         try:
@@ -1518,3 +1749,425 @@ class DataStorage:
         except Exception as e:
             logger.error(f"Error fetching celebration wins: {e}")
             return []
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # USER EXCHANGE KEYS (VVIP / ADMIN REAL TRADING)
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    def save_user_exchange_key(
+        self,
+        user_id: str,
+        exchange: str,
+        api_key: str,
+        api_secret: str,
+        passphrase: Optional[str] = None,
+        is_testnet: bool = False,
+        max_position_size_usd: float = 500.0,
+        auto_trade_enabled: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Securely encrypt and store exchange credentials for real trade execution.
+        """
+        try:
+            if not self.use_db:
+                return {"success": False, "error": "Database not enabled"}
+            
+            clean_exchange = exchange.strip().lower()
+            if clean_exchange not in ("binance", "bybit"):
+                raise ValueError("Only 'binance' and 'bybit' exchanges are supported")
+            
+            clean_key = api_key.strip()
+            clean_secret = api_secret.strip()
+            if not clean_key or not clean_secret:
+                raise ValueError("API Key and Secret must not be empty")
+            
+            # Mask API key for safe UI display (e.g. "abc12...9xyz")
+            masked_key = clean_key[:6] + "..." + clean_key[-4:] if len(clean_key) > 10 else "***"
+            
+            enc_key = encrypt_exchange_secret(clean_key)
+            enc_secret = encrypt_exchange_secret(clean_secret)
+            enc_passphrase = encrypt_exchange_secret(passphrase.strip()) if passphrase else None
+            
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Deactivate previous active keys for the same exchange & testnet mode
+            cursor.execute(
+                '''
+                UPDATE user_exchange_keys
+                SET is_active = 0, updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ? AND exchange = ? AND is_testnet = ?
+                ''',
+                (user_id, clean_exchange, 1 if is_testnet else 0)
+            )
+            
+            cursor.execute(
+                '''
+                INSERT INTO user_exchange_keys (
+                    user_id, exchange, api_key_masked, api_key_encrypted, api_secret_encrypted,
+                    passphrase_encrypted, is_testnet, is_active, auto_trade_enabled,
+                    max_position_size_usd, status, last_tested_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'VERIFIED', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ''',
+                (
+                    user_id,
+                    clean_exchange,
+                    masked_key,
+                    enc_key,
+                    enc_secret,
+                    enc_passphrase,
+                    1 if is_testnet else 0,
+                    1 if auto_trade_enabled else 0,
+                    float(max_position_size_usd),
+                )
+            )
+            key_id = cursor.lastrowid
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"🔑 Stored encrypted exchange key id={key_id} for user={user_id} on exchange={clean_exchange}")
+            return {
+                "id": key_id,
+                "exchange": clean_exchange,
+                "api_key_masked": masked_key,
+                "is_testnet": is_testnet,
+                "is_active": True,
+                "auto_trade_enabled": auto_trade_enabled,
+                "max_position_size_usd": max_position_size_usd,
+                "status": "VERIFIED",
+            }
+        except Exception as e:
+            logger.error(f"Error saving user exchange key: {e}")
+            raise
+
+    def get_user_exchange_keys(self, user_id: str) -> List[Dict[str, Any]]:
+        """
+        List all saved exchange keys for user (with secrets masked).
+        """
+        try:
+            if not self.use_db:
+                return []
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT 
+                    id, user_id, exchange, api_key_masked, is_testnet, is_active,
+                    auto_trade_enabled, max_position_size_usd, status, last_tested_at,
+                    last_error, created_at, updated_at
+                FROM user_exchange_keys
+                WHERE user_id = ?
+                ORDER BY is_active DESC, updated_at DESC
+                ''',
+                (user_id,)
+            )
+            rows = cursor.fetchall()
+            conn.close()
+            return [dict(r) for r in rows]
+        except Exception as e:
+            logger.error(f"Error fetching user exchange keys: {e}")
+            return []
+
+    def get_user_exchange_key_by_id(
+        self, key_id: int, user_id: str, include_secret: bool = False
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve a single exchange key. If include_secret is True, decrypts the secret.
+        """
+        try:
+            if not self.use_db:
+                return None
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT * FROM user_exchange_keys
+                WHERE id = ? AND user_id = ?
+                ''',
+                (key_id, user_id)
+            )
+            row = cursor.fetchone()
+            conn.close()
+            if not row:
+                return None
+            
+            data = dict(row)
+            if include_secret:
+                data["api_key_decrypted"] = decrypt_exchange_secret(data.get("api_key_encrypted", ""))
+                data["api_secret_decrypted"] = decrypt_exchange_secret(data.get("api_secret_encrypted", ""))
+                if data.get("passphrase_encrypted"):
+                    data["passphrase_decrypted"] = decrypt_exchange_secret(data["passphrase_encrypted"])
+            else:
+                data.pop("api_key_encrypted", None)
+                data.pop("api_secret_encrypted", None)
+                data.pop("passphrase_encrypted", None)
+            return data
+        except Exception as e:
+            logger.error(f"Error fetching exchange key by id: {e}")
+            return None
+
+    def delete_user_exchange_key(self, key_id: int, user_id: str) -> bool:
+        """
+        Permanently delete an exchange key configuration.
+        """
+        try:
+            if not self.use_db:
+                return False
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                'DELETE FROM user_exchange_keys WHERE id = ? AND user_id = ?',
+                (key_id, user_id)
+            )
+            affected = cursor.rowcount
+            conn.commit()
+            conn.close()
+            return affected > 0
+        except Exception as e:
+            logger.error(f"Error deleting user exchange key: {e}")
+            return False
+
+    def toggle_exchange_auto_trade(self, key_id: int, user_id: str, enabled: bool) -> bool:
+        """
+        Enable or disable automated live trade execution for an exchange key.
+        """
+        try:
+            if not self.use_db:
+                return False
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE user_exchange_keys
+                SET auto_trade_enabled = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND user_id = ?
+                ''',
+                (1 if enabled else 0, key_id, user_id)
+            )
+            affected = cursor.rowcount
+            conn.commit()
+            conn.close()
+            return affected > 0
+        except Exception as e:
+            logger.error(f"Error toggling exchange auto-trade: {e}")
+            return False
+
+    def update_exchange_key_tested(
+        self, key_id: int, user_id: str, status: str, last_error: Optional[str] = None
+    ) -> bool:
+        try:
+            if not self.use_db:
+                return False
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE user_exchange_keys
+                SET status = ?, last_error = ?, last_tested_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND user_id = ?
+                ''',
+                (status, last_error, key_id, user_id)
+            )
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Error updating exchange key test status: {e}")
+            return False
+
+    def get_user_risk_settings(self, user_id: str) -> Dict:
+        """Get or initialize user risk settings and consent status"""
+        default_settings = {
+            "user_id": user_id,
+            "trading_style": "day_trader",
+            "risk_tolerance": "moderate",
+            "sizing_mode": "kelly",
+            "kelly_fraction": 0.25,
+            "max_leverage": 3,
+            "stop_loss_atr_mult": 1.5,
+            "take_profit_atr_mult": 3.0,
+            "use_trailing_stop": 1,
+            "min_confidence": 0.65,
+            "require_ensemble_agreement": 1,
+            "max_open_positions": 5,
+            "risk_consent_accepted": 0,
+            "risk_consent_at": None,
+            "risk_consent_ip": None,
+        }
+        try:
+            if not self.use_db:
+                return default_settings
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM user_risk_settings WHERE user_id = ?', (user_id,))
+            row = cursor.fetchone()
+            if row:
+                res = dict(row)
+                conn.close()
+                return res
+            cursor.execute('''
+                INSERT OR IGNORE INTO user_risk_settings (user_id) VALUES (?)
+            ''', (user_id,))
+            conn.commit()
+            conn.close()
+            return default_settings
+        except Exception as e:
+            logger.error(f"Error getting user risk settings: {e}")
+            return default_settings
+
+    def save_user_risk_settings(self, user_id: str, settings_dict: Dict) -> bool:
+        """Save updated user risk settings"""
+        try:
+            if not self.use_db:
+                return False
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO user_risk_settings (
+                    user_id, trading_style, risk_tolerance, sizing_mode, kelly_fraction,
+                    max_leverage, stop_loss_atr_mult, take_profit_atr_mult, use_trailing_stop,
+                    min_confidence, require_ensemble_agreement, max_open_positions, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    trading_style = excluded.trading_style,
+                    risk_tolerance = excluded.risk_tolerance,
+                    sizing_mode = excluded.sizing_mode,
+                    kelly_fraction = excluded.kelly_fraction,
+                    max_leverage = excluded.max_leverage,
+                    stop_loss_atr_mult = excluded.stop_loss_atr_mult,
+                    take_profit_atr_mult = excluded.take_profit_atr_mult,
+                    use_trailing_stop = excluded.use_trailing_stop,
+                    min_confidence = excluded.min_confidence,
+                    require_ensemble_agreement = excluded.require_ensemble_agreement,
+                    max_open_positions = excluded.max_open_positions,
+                    updated_at = CURRENT_TIMESTAMP
+            ''', (
+                user_id,
+                settings_dict.get("trading_style", "day_trader"),
+                settings_dict.get("risk_tolerance", "moderate"),
+                settings_dict.get("sizing_mode", "kelly"),
+                float(settings_dict.get("kelly_fraction", 0.25)),
+                int(settings_dict.get("max_leverage", 3)),
+                float(settings_dict.get("stop_loss_atr_mult", 1.5)),
+                float(settings_dict.get("take_profit_atr_mult", 3.0)),
+                1 if settings_dict.get("use_trailing_stop", True) in (1, True, "1", "true") else 0,
+                float(settings_dict.get("min_confidence", 0.65)),
+                1 if settings_dict.get("require_ensemble_agreement", True) in (1, True, "1", "true") else 0,
+                int(settings_dict.get("max_open_positions", 5)),
+            ))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Error saving user risk settings: {e}")
+            return False
+
+    def save_risk_consent(self, user_id: str, ip_address: Optional[str] = None) -> bool:
+        """Record explicit legal risk consent for real trading execution"""
+        try:
+            if not self.use_db:
+                return False
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO user_risk_settings (
+                    user_id, risk_consent_accepted, risk_consent_at, risk_consent_ip, updated_at
+                ) VALUES (?, 1, CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    risk_consent_accepted = 1,
+                    risk_consent_at = CURRENT_TIMESTAMP,
+                    risk_consent_ip = excluded.risk_consent_ip,
+                    updated_at = CURRENT_TIMESTAMP
+            ''', (user_id, ip_address or "unknown"))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Error saving risk consent: {e}")
+            return False
+
+    def has_risk_consent(self, user_id: str) -> bool:
+        """Check if user has accepted real trade execution risk consent"""
+        try:
+            if not self.use_db:
+                return False
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('SELECT risk_consent_accepted FROM user_risk_settings WHERE user_id = ?', (user_id,))
+            row = cursor.fetchone()
+            conn.close()
+            return bool(row and row[0] == 1)
+        except Exception as e:
+            logger.error(f"Error checking risk consent: {e}")
+            return False
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# CRYPTOGRAPHIC HELPERS FOR EXCHANGE CREDENTIALS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def encrypt_exchange_secret(plain_secret: str, master_key: Optional[str] = None) -> str:
+    """
+    Encrypt exchange secret using Authenticated Encrypt-then-MAC (PBKDF2 HMAC-SHA256).
+    """
+    if not plain_secret:
+        return ""
+    key_material = master_key or os.getenv("JWT_SECRET_KEY", "snartcrypto_master_secret_key_2026_vvip_trading")
+    salt = secrets.token_bytes(16)
+    derived = hashlib.pbkdf2_hmac("sha256", key_material.encode("utf-8"), salt, 100000, dklen=64)
+    enc_key, mac_key = derived[:32], derived[32:]
+    
+    iv = secrets.token_bytes(16)
+    raw_data = plain_secret.encode("utf-8")
+    
+    keystream = bytearray()
+    ctr = 0
+    while len(keystream) < len(raw_data):
+        keystream.extend(hmac.new(enc_key, iv + ctr.to_bytes(4, "big"), hashlib.sha256).digest())
+        ctr += 1
+    
+    ciphertext = bytes(b ^ k for b, k in zip(raw_data, keystream[:len(raw_data)]))
+    auth_tag = hmac.new(mac_key, salt + iv + ciphertext, hashlib.sha256).digest()
+    
+    package = salt + iv + auth_tag + ciphertext
+    return base64.urlsafe_b64encode(package).decode("utf-8")
+
+
+def decrypt_exchange_secret(encrypted_token: str, master_key: Optional[str] = None) -> str:
+    """
+    Decrypt and authenticate exchange secret.
+    """
+    if not encrypted_token:
+        return ""
+    try:
+        raw = base64.urlsafe_b64decode(encrypted_token.encode("utf-8"))
+        if len(raw) < 64:
+            raise ValueError("Ciphertext payload too short")
+        
+        salt = raw[:16]
+        iv = raw[16:32]
+        auth_tag = raw[32:64]
+        ciphertext = raw[64:]
+        
+        key_material = master_key or os.getenv("JWT_SECRET_KEY", "snartcrypto_master_secret_key_2026_vvip_trading")
+        derived = hashlib.pbkdf2_hmac("sha256", key_material.encode("utf-8"), salt, 100000, dklen=64)
+        enc_key, mac_key = derived[:32], derived[32:]
+        
+        expected_tag = hmac.new(mac_key, salt + iv + ciphertext, hashlib.sha256).digest()
+        if not hmac.compare_digest(auth_tag, expected_tag):
+            raise ValueError("Authentication tag mismatch or corrupted secret")
+        
+        keystream = bytearray()
+        ctr = 0
+        while len(keystream) < len(ciphertext):
+            keystream.extend(hmac.new(enc_key, iv + ctr.to_bytes(4, "big"), hashlib.sha256).digest())
+            ctr += 1
+        
+        decrypted_bytes = bytes(b ^ k for b, k in zip(ciphertext, keystream[:len(ciphertext)]))
+        return decrypted_bytes.decode("utf-8")
+    except Exception as e:
+        logger.error(f"Failed to decrypt exchange secret: {e}")
+        return ""

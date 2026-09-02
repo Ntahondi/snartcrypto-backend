@@ -267,6 +267,10 @@ class SignalGenerator:
 
     def prepare_smart_trader_features(self, current_data: pd.DataFrame) -> Optional[np.ndarray]:
         try:
+            if 'rsi_14' not in current_data.columns or 'volatility_pct' not in current_data.columns:
+                from src.data.processors import DataProcessor
+                current_data = DataProcessor().engineer_features(current_data)
+
             data_clean = current_data.loc[:, ~current_data.columns.duplicated()].copy()
             for col in self.features_smart:
                 if col not in data_clean.columns:
@@ -316,6 +320,11 @@ class SignalGenerator:
                 else:
                     return self.get_latest_signal(symbol)
 
+            # Ensure all 58 technical indicators are computed if raw OHLCV was provided
+            if "rsi_14" not in current_data.columns or len(current_data.columns) < 20:
+                from src.data.processors import DataProcessor
+                current_data = DataProcessor().engineer_features(current_data)
+
             # Prepare Data Inputs
             seq_tensor, raw_matrix = self.prepare_regression_sequence(current_data)
             gpt_matrix = self.prepare_market_gpt_sequence(current_data)
@@ -339,10 +348,14 @@ class SignalGenerator:
                 pred_4h = float(self.model_reg_models['4h'].predict(X_row)[0])
                 pred_12h = float(self.model_reg_models['12h'].predict(X_row)[0])
 
-                if (pred_4h >= min_thresh or pred_12h >= min_thresh * 1.5) and pred_1h > 0:
+                # Composite Multi-Horizon Expected Return
+                comp_return = (0.25 * pred_1h) + (0.50 * pred_4h) + (0.25 * (pred_12h / 3.0))
+                if comp_return >= min_thresh or (pred_4h >= min_thresh and pred_12h > 0):
                     vote_m1 = 'BUY'
-                elif (pred_4h <= -min_thresh or pred_12h <= -min_thresh * 1.5) and pred_1h < 0:
+                elif comp_return <= -min_thresh or (pred_4h <= -min_thresh and pred_12h < 0):
                     vote_m1 = 'SELL'
+                else:
+                    vote_m1 = 'HOLD'
             elif self.model_reg is not None and seq_tensor is not None:
                 preds_reg = self.model_reg.predict(seq_tensor, verbose=0)
                 p1_norm = float(preds_reg[0][0][0])
@@ -356,10 +369,13 @@ class SignalGenerator:
                 else:
                     pred_1h, pred_4h, pred_12h = p1_norm, p4_norm, p12_norm
 
-                if (pred_4h >= min_thresh or pred_12h >= min_thresh * 1.5) and pred_1h > 0:
+                comp_return = (0.25 * pred_1h) + (0.50 * pred_4h) + (0.25 * (pred_12h / 3.0))
+                if comp_return >= min_thresh or (pred_4h >= min_thresh and pred_12h > 0):
                     vote_m1 = 'BUY'
-                elif (pred_4h <= -min_thresh or pred_12h <= -min_thresh * 1.5) and pred_1h < 0:
+                elif comp_return <= -min_thresh or (pred_4h <= -min_thresh and pred_12h < 0):
                     vote_m1 = 'SELL'
+                else:
+                    vote_m1 = 'HOLD'
 
             # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             # VOTE 2: Model 2 (6-Head Smart Trader AI)
@@ -393,7 +409,7 @@ class SignalGenerator:
                     self.model_gpt,
                     gpt_matrix,
                     scaler=getattr(self, 'scaler_gpt', None),
-                    n_simulations=500
+                    n_simulations=100
                 )
                 raw_win_prob = float(sim_res.get('win_probability', 0.5))
                 raw_loss_prob = float(sim_res.get('loss_probability', 0.5))
@@ -531,7 +547,12 @@ class SignalGenerator:
                     'summary': f"{consensus_tag} {final_action} on {symbol} (M1={vote_m1}, M2={vote_m2}, M3={vote_m3}){strat_summary}",
                     'signal_type': 'STRONG_TREND',
                     'detected_pattern': f"AI_{vote_count}_OF_3_VOTE",
-                    'active_strategies': active_strats
+                    'active_strategies': active_strats,
+                    'timeframe_consensus': {
+                        '1h': 'BUY' if pred_1h > 0.0005 else ('SELL' if pred_1h < -0.0005 else final_action),
+                        '4h': 'BUY' if pred_4h > 0.001 else ('SELL' if pred_4h < -0.001 else final_action),
+                        '1d': 'BUY' if pred_12h > 0.002 else ('SELL' if pred_12h < -0.002 else final_action),
+                    }
                 },
                 'outcome': 'OPEN',
                 'pnl_percentage': None,

@@ -397,6 +397,18 @@ async def require_vip_user(
     return user
 
 
+async def require_vvip_user(
+    user: AuthenticatedUser = Depends(require_authenticated_user),
+) -> AuthenticatedUser:
+    """Requires at least a VVIP Tier ($99/mo) or Admin privilege for direct exchange trade execution."""
+    if not user.is_vvip:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="VVIP subscription required. Upgrade to VVIP ($99/mo) to unlock automated live exchange trade execution for Binance & Bybit.",
+        )
+    return user
+
+
 async def require_admin_user(
     user: AuthenticatedUser = Depends(require_authenticated_user),
 ) -> AuthenticatedUser:

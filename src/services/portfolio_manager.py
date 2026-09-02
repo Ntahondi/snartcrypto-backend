@@ -152,11 +152,8 @@ class PortfolioManager:
     VERSION = "3.1.0"
 
     # Safety ceiling independent of profile configuration.
-    #
-    # This is intentionally conservative for real-money operation.
-    # Paper testing can use a dedicated profile but should still
-    # respect this manager-level protection.
-    MAX_POSITIONS_HARD_CAP = 3
+    # Set to 10 to support active multi-symbol quantitative portfolios.
+    MAX_POSITIONS_HARD_CAP = 10
 
     DEFAULT_MIN_ALLOCATION_PCT = 0.01
 
@@ -1544,7 +1541,7 @@ class PortfolioManager:
 
         profile_max_positions = self._profile_int(
             "max_total_positions",
-            1,
+            10,
         )
 
         max_positions = min(
