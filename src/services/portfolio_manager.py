@@ -2537,6 +2537,25 @@ class PortfolioManager:
             pnl_pct = position.pnl_percentage or 0.0
 
             # -------------------------------------------------
+            # 0. Profile-Adaptive Shield Configuration
+            # -------------------------------------------------
+            prof_name = getattr(position, "profile_name", self.profile_name) or self.profile_name
+            try:
+                prof_cfg = get_profile(prof_name)
+            except Exception:
+                prof_cfg = self.profile
+
+            t1_trigger = getattr(prof_cfg, "tier1_breakeven_trigger_pct", 2.0)
+            t1_buffer = getattr(prof_cfg, "tier1_fee_buffer_pct", 0.2)
+            t2_trigger = getattr(prof_cfg, "tier2_lock_trigger_pct", 3.5)
+            t2_lock = getattr(prof_cfg, "tier2_profit_lock_pct", 1.8)
+            t3_trigger = getattr(prof_cfg, "tier3_trail_trigger_pct", 6.0)
+            t3_dist = getattr(prof_cfg, "tier3_trail_distance_pct", 1.5)
+            rec_dip_max = getattr(prof_cfg, "recovery_shallow_dip_max_loss_pct", 1.5)
+            rec_ext_hours = getattr(prof_cfg, "recovery_extension_hours", 2)
+            rec_cap_hours = getattr(prof_cfg, "max_recovery_capped_hours", 6)
+
+            # -------------------------------------------------
             # 1. AI Profit Shield: Track Peak High-Water Mark
             # -------------------------------------------------
             if pnl_pct > position.peak_pnl_percentage:
@@ -2548,29 +2567,41 @@ class PortfolioManager:
             # -------------------------------------------------
             # 2. AI Profit Shield: Dynamic Trailing & Breakeven
             # -------------------------------------------------
-            if position.peak_pnl_percentage >= 3.5:
-                # Tier 2: Lock in +1.8% guaranteed profit
+            if position.peak_pnl_percentage >= t3_trigger:
+                # Tier 3: Macro Dynamic Trailing Lock (e.g. Swing/Position runner)
+                position.trail_tier = 3
+                position.is_risk_free = True
+                position.shield_status = "PROFIT_LOCKED"
+                peak_p = position.peak_price or current_price
+                trail_sl = peak_p * (1.0 - t3_dist / 100.0) if is_long else peak_p * (1.0 + t3_dist / 100.0)
+                if (is_long and trail_sl > position.stop_loss) or (not is_long and trail_sl < position.stop_loss):
+                    position.stop_loss = trail_sl
+                    logger.info(
+                        f"🚀 [AI Profit Shield - TIER 3 MACRO TRAIL] {symbol} ({prof_name}) Trailing SL raised to {trail_sl:.4f} ({t3_dist:.1f}% behind peak {peak_p:.4f})"
+                    )
+            elif position.peak_pnl_percentage >= t2_trigger:
+                # Tier 2: Lock in guaranteed net profit
                 if position.trail_tier < 2:
                     position.trail_tier = 2
                     position.is_risk_free = True
                     position.shield_status = "PROFIT_LOCKED"
-                    locked_sl = position.entry_price * 1.018 if is_long else position.entry_price * 0.982
+                    locked_sl = position.entry_price * (1.0 + t2_lock / 100.0) if is_long else position.entry_price * (1.0 - t2_lock / 100.0)
                     if (is_long and locked_sl > position.stop_loss) or (not is_long and locked_sl < position.stop_loss):
                         position.stop_loss = locked_sl
                         logger.info(
-                            f"💰 [AI Profit Shield - TIER 2] {symbol} Trailing SL locked to {locked_sl:.4f} (+1.8% profit guaranteed)"
+                            f"💰 [AI Profit Shield - TIER 2] {symbol} ({prof_name}) Trailing SL locked to {locked_sl:.4f} (+{t2_lock:.1f}% profit guaranteed)"
                         )
-            elif position.peak_pnl_percentage >= 2.0:
-                # Tier 1: Move Stop-Loss to Breakeven (+0.2% fee buffer)
+            elif position.peak_pnl_percentage >= t1_trigger:
+                # Tier 1: Move Stop-Loss to Breakeven (+ fee buffer)
                 if position.trail_tier < 1:
                     position.trail_tier = 1
                     position.is_risk_free = True
                     position.shield_status = "RISK_FREE_BREAKEVEN"
-                    breakeven_sl = position.entry_price * 1.002 if is_long else position.entry_price * 0.998
+                    breakeven_sl = position.entry_price * (1.0 + t1_buffer / 100.0) if is_long else position.entry_price * (1.0 - t1_buffer / 100.0)
                     if (is_long and breakeven_sl > position.stop_loss) or (not is_long and breakeven_sl < position.stop_loss):
                         position.stop_loss = breakeven_sl
                         logger.info(
-                            f"🛡️ [AI Profit Shield - TIER 1] {symbol} SL raised to Breakeven {breakeven_sl:.4f} (100% Risk-Free)"
+                            f"🛡️ [AI Profit Shield - TIER 1] {symbol} ({prof_name}) SL raised to Breakeven {breakeven_sl:.4f} (100% Risk-Free)"
                         )
 
             # -------------------------------------------------
@@ -2620,18 +2651,18 @@ class PortfolioManager:
                 hold_hours = (now - entry_time).total_seconds() / 3600.0
 
                 if position.max_holding_hours > 0 and hold_hours >= position.max_holding_hours:
-                    # Smart Recovery: If shallow dip and showed prior positive momentum, grant 1-time +2h extension (capped at 6h)
+                    # Smart Recovery: If shallow dip and showed prior positive momentum, grant 1-time extension (capped at profile max)
                     if (
-                        position.max_holding_hours <= 4
-                        and not position.extension_active
-                        and position.peak_pnl_percentage >= 1.5
-                        and (-1.5 <= pnl_pct <= -0.3)
+                        not position.extension_active
+                        and position.peak_pnl_percentage >= (t1_trigger * 0.75)
+                        and (-rec_dip_max <= pnl_pct <= -0.2)
+                        and position.max_holding_hours < rec_cap_hours
                     ):
-                        position.max_holding_hours = 6
+                        position.max_holding_hours = min(position.max_holding_hours + rec_ext_hours, rec_cap_hours)
                         position.extension_active = True
                         position.shield_status = "RECOVERY_EXTENDED"
                         logger.info(
-                            f"⏳ [AI Profit Shield] {symbol} Shallow dip recovery extension granted (+2h, max 6h cap). Peak was +{position.peak_pnl_percentage:.2f}%"
+                            f"⏳ [AI Profit Shield] {symbol} ({prof_name}) Shallow dip recovery extension granted (+{rec_ext_hours}h, max {rec_cap_hours}h cap). Peak was +{position.peak_pnl_percentage:.2f}%"
                         )
                     else:
                         exit_reason = "TIMEOUT_RECOVERY" if position.extension_active else "TIMEOUT"

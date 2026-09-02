@@ -68,6 +68,7 @@ from src.api.security import (
 from src.data.cache import get_cache_service
 from src.data.storage import DataStorage
 from src.core.config import get_settings
+from src.core.trading_profiles import get_profile
 
 
 # ============================================================================
@@ -1293,26 +1294,53 @@ class _PersistentLivePositionManager:
                     pos["peak_price"] = curr_p
 
             current_tier = pos.get("trail_tier", 0)
+            prof_name = pos.get("profile_name", "day_trader")
+            try:
+                prof_cfg = get_profile(prof_name)
+            except Exception:
+                prof_cfg = get_profile("day_trader")
 
-            # Tier 1: Breakeven Lock at +2.0% gain
-            if peak_pnl_pct >= 2.0 and current_tier < 1:
-                pos["trail_tier"] = 1
+            t1_trigger = getattr(prof_cfg, "tier1_breakeven_trigger_pct", 2.0)
+            t1_buffer = getattr(prof_cfg, "tier1_fee_buffer_pct", 0.2)
+            t2_trigger = getattr(prof_cfg, "tier2_lock_trigger_pct", 3.5)
+            t2_lock = getattr(prof_cfg, "tier2_profit_lock_pct", 1.8)
+            t3_trigger = getattr(prof_cfg, "tier3_trail_trigger_pct", 6.0)
+            t3_dist = getattr(prof_cfg, "tier3_trail_distance_pct", 1.5)
+            rec_dip_max = getattr(prof_cfg, "recovery_shallow_dip_max_loss_pct", 1.5)
+            rec_ext_hours = getattr(prof_cfg, "recovery_extension_hours", 2)
+            rec_cap_hours = getattr(prof_cfg, "max_recovery_capped_hours", 6)
+
+            # Tier 3: Macro Dynamic Trailing Lock (e.g. Swing/Position runner)
+            if peak_pnl_pct >= t3_trigger:
+                pos["trail_tier"] = 3
                 pos["is_risk_free"] = True
-                be_sl = round(entry_p * 1.002 if is_long else entry_p * 0.998, 4 if entry_p < 10 else 2)
-                if (is_long and be_sl > sl) or (not is_long and be_sl < sl):
-                    pos["stop_loss"] = be_sl
-                    sl = be_sl
-                logger.info(f"🛡️ AI Profit Shield Tier 1 Activated for {sym}: SL moved to Breakeven ${sl} (peak={peak_pnl_pct}%)")
-
-            # Tier 2: Profit Lock at +3.5% gain (+1.8% locked)
-            if peak_pnl_pct >= 3.5 and current_tier < 2:
+                pos["shield_status"] = "PROFIT_LOCKED"
+                peak_p = pos.get("peak_price") or curr_p
+                trail_sl = round(peak_p * (1.0 - t3_dist / 100.0) if is_long else peak_p * (1.0 + t3_dist / 100.0), 4 if entry_p < 10 else 2)
+                if (is_long and trail_sl > sl) or (not is_long and trail_sl < sl):
+                    pos["stop_loss"] = trail_sl
+                    sl = trail_sl
+                    logger.info(f"🚀 AI Profit Shield Tier 3 Activated for {sym} ({prof_name}): SL trailed to ${sl} ({t3_dist}% behind peak ${peak_p})")
+            # Tier 2: Profit Lock
+            elif peak_pnl_pct >= t2_trigger and current_tier < 2:
                 pos["trail_tier"] = 2
                 pos["is_risk_free"] = True
-                lock_sl = round(entry_p * 1.018 if is_long else entry_p * 0.982, 4 if entry_p < 10 else 2)
+                pos["shield_status"] = "PROFIT_LOCKED"
+                lock_sl = round(entry_p * (1.0 + t2_lock / 100.0) if is_long else entry_p * (1.0 - t2_lock / 100.0), 4 if entry_p < 10 else 2)
                 if (is_long and lock_sl > sl) or (not is_long and lock_sl < sl):
                     pos["stop_loss"] = lock_sl
                     sl = lock_sl
-                logger.info(f"💰 AI Profit Shield Tier 2 Activated for {sym}: SL locked at +1.8% gain ${sl} (peak={peak_pnl_pct}%)")
+                    logger.info(f"💰 AI Profit Shield Tier 2 Activated for {sym} ({prof_name}): SL locked at +{t2_lock}% gain ${sl} (peak={peak_pnl_pct}%)")
+            # Tier 1: Breakeven Lock (+ fee buffer)
+            elif peak_pnl_pct >= t1_trigger and current_tier < 1:
+                pos["trail_tier"] = 1
+                pos["is_risk_free"] = True
+                pos["shield_status"] = "RISK_FREE_BREAKEVEN"
+                be_sl = round(entry_p * (1.0 + t1_buffer / 100.0) if is_long else entry_p * (1.0 - t1_buffer / 100.0), 4 if entry_p < 10 else 2)
+                if (is_long and be_sl > sl) or (not is_long and be_sl < sl):
+                    pos["stop_loss"] = be_sl
+                    sl = be_sl
+                    logger.info(f"🛡️ AI Profit Shield Tier 1 Activated for {sym} ({prof_name}): SL moved to Breakeven ${sl} (peak={peak_pnl_pct}%)")
 
             # Parse entry time
             try:
@@ -1324,15 +1352,21 @@ class _PersistentLivePositionManager:
 
             elapsed_hours = (now - entry_dt).total_seconds() / 3600.0
 
-            # ⏳ Smart Max-Capped Recovery Extension (at 4h check, max 6h hard cap)
-            if elapsed_hours >= 4.0 and not pos.get("extension_granted", False):
+            # ⏳ Smart Max-Capped Recovery Extension
+            if elapsed_hours >= max_hours and not pos.get("extension_granted", False):
                 regime = pos.get("market_regime", "BULLISH_TREND")
-                if peak_pnl_pct >= 1.5 and -1.5 <= pnl_pct <= -0.3 and (regime == "BULLISH_TREND" if is_long else regime == "BEARISH_TREND"):
+                if (
+                    peak_pnl_pct >= (t1_trigger * 0.75)
+                    and (-rec_dip_max <= pnl_pct <= -0.2)
+                    and max_hours < rec_cap_hours
+                    and (regime == "BULLISH_TREND" if is_long else regime == "BEARISH_TREND")
+                ):
                     pos["extension_granted"] = True
                     pos["extension_active"] = True
-                    pos["max_holding_hours"] = 6
-                    max_hours = 6
-                    logger.info(f"⏳ AI Smart Recovery Extension (+2h) granted for {sym} | peak={peak_pnl_pct}% | pnl={pnl_pct}%")
+                    pos["shield_status"] = "RECOVERY_EXTENDED"
+                    pos["max_holding_hours"] = min(max_hours + rec_ext_hours, rec_cap_hours)
+                    max_hours = pos["max_holding_hours"]
+                    logger.info(f"⏳ AI Smart Recovery Extension (+{rec_ext_hours}h) granted for {sym} ({prof_name}) | max={max_hours}h | peak={peak_pnl_pct}% | pnl={pnl_pct}%")
 
             # 1. Check Take Profit Hit
             tp_hit = (is_long and curr_p >= tp) or (not is_long and curr_p <= tp)

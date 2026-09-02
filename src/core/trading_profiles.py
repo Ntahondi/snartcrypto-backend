@@ -230,6 +230,22 @@ class TradingProfile:
 
     min_time_between_trades: int = 300
 
+    # ------------------------------------------------------------------------
+    # AI PROFIT SHIELD & DYNAMIC RECOVERY
+    # ------------------------------------------------------------------------
+
+    enable_profit_shield: bool = True
+    tier1_breakeven_trigger_pct: float = 2.0
+    tier1_fee_buffer_pct: float = 0.2
+    tier2_lock_trigger_pct: float = 3.5
+    tier2_profit_lock_pct: float = 1.8
+    tier3_trail_trigger_pct: float = 6.0
+    tier3_trail_distance_pct: float = 1.5
+    enable_smart_recovery: bool = True
+    recovery_shallow_dip_max_loss_pct: float = 1.5
+    recovery_extension_hours: int = 2
+    max_recovery_capped_hours: int = 6
+
     # =========================================================================
     # NORMALIZATION
     # =========================================================================
@@ -966,6 +982,19 @@ def get_profile_scalper() -> TradingProfile:
         expected_win_rate=0.58,
         avg_win_loss_ratio=1.5,
 
+        # AI Profit Shield
+        enable_profit_shield=True,
+        tier1_breakeven_trigger_pct=1.0,
+        tier1_fee_buffer_pct=0.1,
+        tier2_lock_trigger_pct=2.0,
+        tier2_profit_lock_pct=1.0,
+        tier3_trail_trigger_pct=3.0,
+        tier3_trail_distance_pct=0.6,
+        enable_smart_recovery=True,
+        recovery_shallow_dip_max_loss_pct=1.0,
+        recovery_extension_hours=1,
+        max_recovery_capped_hours=3,
+
         # Execution
         allow_multiple_positions=True,
         auto_compound=True,
@@ -1033,6 +1062,19 @@ def get_profile_day_trader() -> TradingProfile:
 
         expected_win_rate=0.58,
         avg_win_loss_ratio=2.0,
+
+        # AI Profit Shield
+        enable_profit_shield=True,
+        tier1_breakeven_trigger_pct=2.0,
+        tier1_fee_buffer_pct=0.2,
+        tier2_lock_trigger_pct=3.5,
+        tier2_profit_lock_pct=1.8,
+        tier3_trail_trigger_pct=6.0,
+        tier3_trail_distance_pct=1.5,
+        enable_smart_recovery=True,
+        recovery_shallow_dip_max_loss_pct=1.5,
+        recovery_extension_hours=2,
+        max_recovery_capped_hours=6,
 
         # Execution
         allow_multiple_positions=False,
@@ -1102,6 +1144,19 @@ def get_profile_swing() -> TradingProfile:
         expected_win_rate=0.58,
         avg_win_loss_ratio=2.5,
 
+        # AI Profit Shield
+        enable_profit_shield=True,
+        tier1_breakeven_trigger_pct=3.5,
+        tier1_fee_buffer_pct=0.3,
+        tier2_lock_trigger_pct=7.0,
+        tier2_profit_lock_pct=3.5,
+        tier3_trail_trigger_pct=12.0,
+        tier3_trail_distance_pct=4.0,
+        enable_smart_recovery=True,
+        recovery_shallow_dip_max_loss_pct=2.5,
+        recovery_extension_hours=12,
+        max_recovery_capped_hours=48,
+
         # Execution
         allow_multiple_positions=False,
         auto_compound=True,
@@ -1169,6 +1224,19 @@ def get_profile_position() -> TradingProfile:
 
         expected_win_rate=0.58,
         avg_win_loss_ratio=3.0,
+
+        # AI Profit Shield
+        enable_profit_shield=True,
+        tier1_breakeven_trigger_pct=5.0,
+        tier1_fee_buffer_pct=0.5,
+        tier2_lock_trigger_pct=12.0,
+        tier2_profit_lock_pct=6.0,
+        tier3_trail_trigger_pct=20.0,
+        tier3_trail_distance_pct=6.0,
+        enable_smart_recovery=True,
+        recovery_shallow_dip_max_loss_pct=3.5,
+        recovery_extension_hours=24,
+        max_recovery_capped_hours=216,
 
         # Execution
         allow_multiple_positions=False,
