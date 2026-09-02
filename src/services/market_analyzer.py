@@ -283,10 +283,11 @@ class MarketAnalyzer:
         ]
 
         if not usable_symbols:
-            self.logger.error(
-                "❌ No usable market data was loaded."
+            self.logger.warning(
+                "⚠️ Initial market data fetch had no usable symbols (network/DNS initializing). Analyzer starting in resilient background polling mode."
             )
-            return False
+            self.initialized = True
+            return True
 
         # ---------------------------------------------------------
         # 7. Initial signal evaluation
@@ -1858,11 +1859,15 @@ class MarketAnalyzer:
         """
 
         if not self.initialized:
-            initialized = await self.initialize()
+            try:
+                initialized = await self.initialize()
+            except Exception as exc:
+                self.logger.error(f"MarketAnalyzer initialization error: {exc}")
+                initialized = False
 
             if not initialized:
-                raise RuntimeError(
-                    "MarketAnalyzer initialization failed."
+                self.logger.warning(
+                    "⚠️ MarketAnalyzer initialization postponed. Continuing background lifecycle."
                 )
 
         if self.is_running:

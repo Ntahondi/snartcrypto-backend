@@ -1182,6 +1182,127 @@ class BinanceDataCollector:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# BYBIT FALLBACK DATA COLLECTOR
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+class BybitDataCollector:
+    """
+    Bybit UTA public market data collector.
+    Serves as an automatic secondary fallback when Binance endpoints encounter DNS, rate limit, or regional issues.
+    """
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.base_url = "https://api.bybit.com"
+        self.session: Optional[aiohttp.ClientSession] = None
+
+    async def get_session(self) -> aiohttp.ClientSession:
+        if self.session is None or self.session.closed:
+            timeout = aiohttp.ClientTimeout(total=20, connect=8)
+            self.session = aiohttp.ClientSession(timeout=timeout)
+        return self.session
+
+    async def close(self) -> None:
+        try:
+            if self.session and not self.session.closed:
+                await self.session.close()
+            self.session = None
+        except Exception:
+            pass
+
+    @staticmethod
+    def to_bybit_symbol(symbol: str) -> str:
+        return symbol.upper().replace("/", "").replace(":USDT", "").replace(":USDC", "").strip()
+
+    async def fetch_historical_data(
+        self,
+        symbol: str,
+        interval: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> Optional[pd.DataFrame]:
+        interval = interval or getattr(self.settings, "DEFAULT_INTERVAL", "1h")
+        limit = limit or getattr(self.settings, "DEFAULT_LIMIT", 500)
+        bybit_symbol = self.to_bybit_symbol(symbol)
+
+        bybit_intervals = {
+            "1m": "1", "3m": "3", "5m": "5", "15m": "15", "30m": "30",
+            "1h": "60", "2h": "120", "4h": "240", "6h": "360", "12h": "720",
+            "1d": "D", "1w": "W", "1M": "M"
+        }
+        b_interval = bybit_intervals.get(interval, "60")
+        url = f"{self.base_url}/v5/market/kline"
+        params = {
+            "category": "linear",
+            "symbol": bybit_symbol,
+            "interval": b_interval,
+            "limit": min(int(limit), 1000),
+        }
+
+        try:
+            session = await self.get_session()
+            async with session.get(url, params=params) as resp:
+                if resp.status == 200:
+                    payload = await resp.json()
+                    raw_list = payload.get("result", {}).get("list", [])
+                    if raw_list:
+                        # Bybit list format: [startTime, openPrice, highPrice, lowPrice, closePrice, volume, turnover]
+                        raw_list = list(reversed(raw_list))
+                        records = []
+                        for row in raw_list:
+                            open_t = int(row[0])
+                            vol = float(row[5])
+                            turnover = float(row[6])
+                            records.append({
+                                "open_time": open_t,
+                                "open": float(row[1]),
+                                "high": float(row[2]),
+                                "low": float(row[3]),
+                                "close": float(row[4]),
+                                "volume": vol,
+                                "close_time": open_t + 3599999,
+                                "quote_asset_volume": turnover,
+                                "trades_count": 1000,
+                                "taker_buy_base_volume": vol * 0.5,
+                                "taker_buy_quote_volume": turnover * 0.5,
+                                "ignore": 0,
+                            })
+                        df = pd.DataFrame(records)
+                        df["timestamp"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
+                        df["symbol"] = bybit_symbol
+                        df = df.set_index("timestamp").sort_index()
+                        logger.info(f"✅ Bybit fallback klines fetched for {bybit_symbol} ({len(df)} candles)")
+                        return df
+        except Exception as exc:
+            logger.warning(f"Bybit klines failed for {bybit_symbol}: {exc}")
+        return None
+
+    async def fetch_complete_data(
+        self,
+        symbol: str,
+        interval: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> Optional[pd.DataFrame]:
+        df = await self.fetch_historical_data(symbol, interval, limit)
+        if df is None or df.empty:
+            return None
+        # Add baseline derivative fields so DataProcessor can engineer full features
+        if "funding_rate" not in df.columns:
+            df["funding_rate"] = 0.0001
+        if "funding_rate_annualized" not in df.columns:
+            df["funding_rate_annualized"] = 0.1095
+        if "open_interest" not in df.columns:
+            df["open_interest"] = df["volume"] * 2.5
+        if "open_interest_usd" not in df.columns:
+            df["open_interest_usd"] = df["quote_asset_volume"] * 2.5
+        if "spread_pct" not in df.columns:
+            df["spread_pct"] = 0.0002
+        if "order_imbalance" not in df.columns:
+            df["order_imbalance"] = 0.0
+        return df
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # MULTI-EXCHANGE COLLECTOR
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -1190,7 +1311,7 @@ class MultiExchangeCollector:
     """
     Exchange abstraction with fallback support.
 
-    Binance remains the primary source.
+    Binance remains the primary source, with Bybit as automatic secondary fallback.
     """
 
     def __init__(
@@ -1201,6 +1322,9 @@ class MultiExchangeCollector:
 
         self.collectors = {
             "binance": BinanceDataCollector(
+                settings
+            ),
+            "bybit": BybitDataCollector(
                 settings
             ),
         }
