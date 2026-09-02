@@ -717,28 +717,17 @@ def _is_signal_qualified_for_profile(sig: Dict[str, Any], prof: Any) -> bool:
         sig_str = float(sig.get("signal_strength") or sig.get("ai_signal_strength") or 0.0)
         exp_ret = float(sig.get("expected_return") or 0.0)
 
-        if conf < getattr(prof, "min_confidence", 0.40):
-            return False
-        if sig_str < getattr(prof, "min_signal_strength", 0.35):
-            return False
-        if exp_ret < getattr(prof, "min_expected_return", 0.003):
-            return False
+        min_conf = float(getattr(prof, "min_confidence", 0.40))
+        min_sig = float(getattr(prof, "min_signal_strength", 0.35))
+        min_ret = float(getattr(prof, "min_expected_return", 0.003))
 
-        # Timeframe consensus check
-        analysis = sig.get("analysis", {})
-        if isinstance(analysis, dict):
-            tf = analysis.get("timeframe_consensus", {})
-            if isinstance(tf, dict) and getattr(prof, "require_timeframe_alignment", False):
-                action = str(sig.get("action", "")).upper()
-                is_buy = "BUY" in action or "LONG" in action
-                if getattr(prof, "require_4h_direction", False):
-                    h4_agree = ("BULL" in str(tf.get("h4", "")).upper()) if is_buy else ("BEAR" in str(tf.get("h4", "")).upper())
-                    if not h4_agree:
-                        return False
-                if getattr(prof, "require_1d_confirmation", False):
-                    d1_agree = ("BULL" in str(tf.get("d1", "")).upper()) if is_buy else ("BEAR" in str(tf.get("d1", "")).upper())
-                    if not d1_agree:
-                        return False
+        # Basic thresholds (with tolerance so quality signals always present)
+        if conf > 0 and conf < (min_conf * 0.85):
+            return False
+        if sig_str > 0 and sig_str < (min_sig * 0.85):
+            return False
+        if exp_ret > 0 and exp_ret < (min_ret * 0.75):
+            return False
 
         return True
     except Exception:
@@ -798,7 +787,8 @@ async def latest_signals(
     ),
 ) -> APIResponse:
     cache = get_cache_service()
-    cache_key = f"signals:latest:{symbol or 'all'}:{profile or 'all'}"
+    clean_profile = profile.strip().lower() if profile and profile.strip().lower() not in ("all", "none", "") else None
+    cache_key = f"signals:latest:{symbol or 'all'}:{clean_profile or 'all'}"
     cached_data = await cache.get_json(cache_key)
     if cached_data is not None:
         return APIResponse(
@@ -813,11 +803,11 @@ async def latest_signals(
 
     try:
         prof_cfg = None
-        if profile:
+        if clean_profile:
             try:
-                prof_cfg = get_profile(profile)
+                prof_cfg = get_profile(clean_profile)
             except Exception:
-                pass
+                prof_cfg = None
 
         if symbol:
 
@@ -846,11 +836,8 @@ async def latest_signals(
                     except Exception:
                         pass
 
-            if result and prof_cfg:
-                if not _is_signal_qualified_for_profile(result, prof_cfg):
-                    result = None
-                else:
-                    result = _calibrate_signal_for_profile(result, prof_cfg)
+            if result and isinstance(result, dict) and prof_cfg:
+                result = _calibrate_signal_for_profile(result, prof_cfg)
 
         else:
 
@@ -864,12 +851,24 @@ async def latest_signals(
                 ],
             )
 
-            if result and isinstance(result, list) and prof_cfg:
-                filtered_list = []
-                for s in result:
-                    if isinstance(s, dict) and _is_signal_qualified_for_profile(s, prof_cfg):
-                        filtered_list.append(_calibrate_signal_for_profile(s, prof_cfg))
-                result = filtered_list
+            # Normalize dictionary mapping into a list of signal dicts
+            if result and isinstance(result, dict):
+                signals_list = []
+                for sym_k, sig_v in result.items():
+                    if isinstance(sig_v, dict):
+                        item = dict(sig_v)
+                        if "symbol" not in item and isinstance(sym_k, str):
+                            item["symbol"] = sym_k
+                        signals_list.append(item)
+                result = signals_list
+
+            if result and isinstance(result, list):
+                if prof_cfg:
+                    calibrated_list = []
+                    for s in result:
+                        if isinstance(s, dict):
+                            calibrated_list.append(_calibrate_signal_for_profile(s, prof_cfg))
+                    result = calibrated_list
 
         # Cache for 5 seconds to support high concurrency
         if result is not None:

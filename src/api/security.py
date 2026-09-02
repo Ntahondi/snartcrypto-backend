@@ -94,9 +94,10 @@ def get_snailguard_shield():
                         sys.path.insert(0, sdk_path)
                     from snailguard.core.detector import SnailGuardDetector
 
-                # Use Enterprise tier license key
+                # Use Enterprise tier license key from environment/settings
+                sg_api_key = str(os.getenv("SNAILGUARD_API_KEY", getattr(settings, "SNAILGUARD_API_KEY", "SG-ENT-pL0oK9iJ8uH7yG6tF5rD4eS3wQ2aZ1xV"))).strip()
                 _snailguard_detector = SnailGuardDetector(
-                    api_key="SG-ENT-pL0oK9iJ8uH7yG6tF5rD4eS3wQ2aZ1xV",
+                    api_key=sg_api_key,
                     config={
                         'enable_economic_warfare': getattr(settings, 'SNAILGUARD_ECONOMIC_WARFARE', True),
                         'enable_rule_based_detection': True,

@@ -1403,8 +1403,9 @@ class DataStorage:
         provider_id: Optional[str] = None,
         role: str = 'guest',
     ) -> bool:
-        """Create a new user record."""
+        """Create a new user record with strict email normalization and uniqueness."""
         try:
+            clean_email = email.strip().lower() if email else None
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             cursor.execute(
@@ -1412,7 +1413,7 @@ class DataStorage:
                 INSERT INTO users (user_id, email, password_hash, auth_provider, provider_id, role, last_login)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 ''',
-                (user_id, email, password_hash, auth_provider, provider_id, role, datetime.utcnow().isoformat())
+                (user_id, clean_email, password_hash, auth_provider, provider_id, role, datetime.utcnow().isoformat())
             )
             conn.commit()
             conn.close()

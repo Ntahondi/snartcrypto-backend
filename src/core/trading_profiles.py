@@ -1015,11 +1015,11 @@ def get_profile_day_trader() -> TradingProfile:
         max_positions_per_symbol=1,
         max_total_positions=10,
 
-        position_size_pct=0.08,
+        position_size_pct=0.10,
         max_holding_hours=8,
 
-        min_confidence=0.40,
-        min_signal_strength=0.35,
+        min_confidence=0.60,
+        min_signal_strength=0.50,
 
         require_timeframe_alignment=True,
         require_ensemble_agreement=True,

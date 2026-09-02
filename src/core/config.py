@@ -203,6 +203,11 @@ class Settings(BaseSettings):
         description="Enable SnailGuard economic warfare penalties for malicious bots.",
     )
 
+    SNAILGUARD_API_KEY: str = Field(
+        default="",
+        description="SnailGuard Enterprise license key for threat detection.",
+    )
+
     API_PREFIX: str = Field(
         default="/api/v1",
         description="REST API prefix.",
@@ -761,7 +766,7 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------------
 
     TRADING_PROFILE: str = Field(
-        default="test",
+        default="day_trader",
     )
 
     INITIAL_CAPITAL: float = Field(
