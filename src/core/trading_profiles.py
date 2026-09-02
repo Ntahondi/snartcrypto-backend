@@ -924,28 +924,28 @@ def get_profile_test() -> TradingProfile:
 
 
 def get_profile_scalper() -> TradingProfile:
-    """Aggressive short-duration trading profile."""
+    """Calibrated short-duration high-probability scalping profile for live exchange execution."""
 
     return TradingProfile(
         trading_style=TradingStyle.SCALPER,
         risk_tolerance=RiskTolerance.AGGRESSIVE,
         signal_timeframe=SignalTimeframe.H1,
 
-        max_positions_per_symbol=5,
-        max_total_positions=50,
+        max_positions_per_symbol=1,
+        max_total_positions=10,
 
-        position_size_pct=0.03,
+        position_size_pct=0.05,
         max_holding_hours=2,
 
-        min_confidence=0.35,
-        min_signal_strength=0.30,
+        min_confidence=0.65,
+        min_signal_strength=0.60,
 
-        require_timeframe_alignment=False,
-        require_ensemble_agreement=False,
+        require_timeframe_alignment=True,
+        require_ensemble_agreement=True,
 
         # Regression
         use_regression_model=True,
-        min_expected_return=0.003,
+        min_expected_return=0.004,
 
         # Smart Trader
         use_smart_trader_model=True,
@@ -968,19 +968,19 @@ def get_profile_scalper() -> TradingProfile:
 
         # Risk
         stop_loss_atr_mult=1.0,
-        take_profit_atr_mult=1.5,
+        take_profit_atr_mult=1.8,
 
         max_daily_loss_pct=0.05,
         max_drawdown_pct=0.15,
 
-        use_trailing_stop=False,
+        use_trailing_stop=True,
 
         # Kelly
         use_kelly_sizing=True,
         kelly_fraction=0.20,
 
-        expected_win_rate=0.58,
-        avg_win_loss_ratio=1.5,
+        expected_win_rate=0.62,
+        avg_win_loss_ratio=1.6,
 
         # AI Profit Shield
         enable_profit_shield=True,
@@ -996,11 +996,11 @@ def get_profile_scalper() -> TradingProfile:
         max_recovery_capped_hours=3,
 
         # Execution
-        allow_multiple_positions=True,
+        allow_multiple_positions=False,
         auto_compound=True,
 
-        max_daily_trades=50,
-        min_time_between_trades=120,
+        max_daily_trades=30,
+        min_time_between_trades=60,
     )
 
 
