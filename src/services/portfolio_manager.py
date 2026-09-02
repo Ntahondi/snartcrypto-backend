@@ -129,6 +129,14 @@ class Position:
     # Closure information
     close_reason: Optional[str] = None
 
+    # AI Profit Shield & Recovery
+    peak_pnl_percentage: float = 0.0
+    peak_price: Optional[float] = None
+    trail_tier: int = 0
+    is_risk_free: bool = False
+    extension_active: bool = False
+    shield_status: str = "ACTIVE"
+
 
 class PortfolioManager:
     """
@@ -2521,11 +2529,49 @@ class PortfolioManager:
             )
 
             if notional > 0:
-
                 position.pnl_percentage = (
                     position.pnl
                     / notional
                 ) * 100.0
+
+            pnl_pct = position.pnl_percentage or 0.0
+
+            # -------------------------------------------------
+            # 1. AI Profit Shield: Track Peak High-Water Mark
+            # -------------------------------------------------
+            if pnl_pct > position.peak_pnl_percentage:
+                position.peak_pnl_percentage = pnl_pct
+                position.peak_price = current_price
+
+            is_long = position.action in {"BUY", "LONG"}
+
+            # -------------------------------------------------
+            # 2. AI Profit Shield: Dynamic Trailing & Breakeven
+            # -------------------------------------------------
+            if position.peak_pnl_percentage >= 3.5:
+                # Tier 2: Lock in +1.8% guaranteed profit
+                if position.trail_tier < 2:
+                    position.trail_tier = 2
+                    position.is_risk_free = True
+                    position.shield_status = "PROFIT_LOCKED"
+                    locked_sl = position.entry_price * 1.018 if is_long else position.entry_price * 0.982
+                    if (is_long and locked_sl > position.stop_loss) or (not is_long and locked_sl < position.stop_loss):
+                        position.stop_loss = locked_sl
+                        logger.info(
+                            f"💰 [AI Profit Shield - TIER 2] {symbol} Trailing SL locked to {locked_sl:.4f} (+1.8% profit guaranteed)"
+                        )
+            elif position.peak_pnl_percentage >= 2.0:
+                # Tier 1: Move Stop-Loss to Breakeven (+0.2% fee buffer)
+                if position.trail_tier < 1:
+                    position.trail_tier = 1
+                    position.is_risk_free = True
+                    position.shield_status = "RISK_FREE_BREAKEVEN"
+                    breakeven_sl = position.entry_price * 1.002 if is_long else position.entry_price * 0.998
+                    if (is_long and breakeven_sl > position.stop_loss) or (not is_long and breakeven_sl < position.stop_loss):
+                        position.stop_loss = breakeven_sl
+                        logger.info(
+                            f"🛡️ [AI Profit Shield - TIER 1] {symbol} SL raised to Breakeven {breakeven_sl:.4f} (100% Risk-Free)"
+                        )
 
             # -------------------------------------------------
             # Exit conditions
@@ -2539,83 +2585,57 @@ class PortfolioManager:
                 float
             ] = None
 
-            if position.action == "BUY":
-
+            if is_long:
                 if current_price <= position.stop_loss:
-
-                    exit_reason = (
-                        "STOP_LOSS"
-                    )
-
-                    exit_price = (
-                        position.stop_loss
-                    )
-
+                    if position.trail_tier >= 2:
+                        exit_reason = "TRAILING_PROFIT_LOCK"
+                    elif position.trail_tier >= 1 or position.is_risk_free:
+                        exit_reason = "DYNAMIC_BREAKEVEN"
+                    else:
+                        exit_reason = "STOP_LOSS"
+                    exit_price = position.stop_loss
                 elif current_price >= position.take_profit:
-
-                    exit_reason = (
-                        "TAKE_PROFIT"
-                    )
-
-                    exit_price = (
-                        position.take_profit
-                    )
-
+                    exit_reason = "TAKE_PROFIT"
+                    exit_price = position.take_profit
             else:
-
                 if current_price >= position.stop_loss:
-
-                    exit_reason = (
-                        "STOP_LOSS"
-                    )
-
-                    exit_price = (
-                        position.stop_loss
-                    )
-
+                    if position.trail_tier >= 2:
+                        exit_reason = "TRAILING_PROFIT_LOCK"
+                    elif position.trail_tier >= 1 or position.is_risk_free:
+                        exit_reason = "DYNAMIC_BREAKEVEN"
+                    else:
+                        exit_reason = "STOP_LOSS"
+                    exit_price = position.stop_loss
                 elif current_price <= position.take_profit:
-
-                    exit_reason = (
-                        "TAKE_PROFIT"
-                    )
-
-                    exit_price = (
-                        position.take_profit
-                    )
+                    exit_reason = "TAKE_PROFIT"
+                    exit_price = position.take_profit
 
             # -------------------------------------------------
-            # Maximum holding time
+            # Maximum holding time & Smart Capped Recovery
             # -------------------------------------------------
 
             if exit_reason is None:
+                now = datetime.now(timezone.utc)
+                entry_time = self._ensure_aware_datetime(position.entry_time)
+                hold_hours = (now - entry_time).total_seconds() / 3600.0
 
-                now = datetime.now(
-                    timezone.utc
-                )
-
-                entry_time = (
-                    self._ensure_aware_datetime(
-                        position.entry_time
-                    )
-                )
-
-                hold_hours = (
-                    now - entry_time
-                ).total_seconds() / 3600.0
-
-                if (
-                    position.max_holding_hours > 0
-                    and hold_hours
-                    >= position.max_holding_hours
-                ):
-
-                    exit_reason = (
-                        "TIMEOUT"
-                    )
-
-                    exit_price = (
-                        current_price
-                    )
+                if position.max_holding_hours > 0 and hold_hours >= position.max_holding_hours:
+                    # Smart Recovery: If shallow dip and showed prior positive momentum, grant 1-time +2h extension (capped at 6h)
+                    if (
+                        position.max_holding_hours <= 4
+                        and not position.extension_active
+                        and position.peak_pnl_percentage >= 1.5
+                        and (-1.5 <= pnl_pct <= -0.3)
+                    ):
+                        position.max_holding_hours = 6
+                        position.extension_active = True
+                        position.shield_status = "RECOVERY_EXTENDED"
+                        logger.info(
+                            f"⏳ [AI Profit Shield] {symbol} Shallow dip recovery extension granted (+2h, max 6h cap). Peak was +{position.peak_pnl_percentage:.2f}%"
+                        )
+                    else:
+                        exit_reason = "TIMEOUT_RECOVERY" if position.extension_active else "TIMEOUT"
+                        exit_price = current_price
 
             # -------------------------------------------------
             # Close
@@ -3334,6 +3354,30 @@ class PortfolioManager:
                     position.close_reason
                 ),
 
+                "peak_pnl_percentage": (
+                    position.peak_pnl_percentage
+                ),
+
+                "peak_price": (
+                    position.peak_price
+                ),
+
+                "trail_tier": (
+                    position.trail_tier
+                ),
+
+                "is_risk_free": (
+                    position.is_risk_free
+                ),
+
+                "extension_active": (
+                    position.extension_active
+                ),
+
+                "shield_status": (
+                    position.shield_status
+                ),
+
                 "snapshot_time": (
                     self._datetime_to_iso(
                         datetime.now(
@@ -3677,6 +3721,32 @@ class PortfolioManager:
 
                 close_reason=data.get(
                     "close_reason"
+                ),
+
+                peak_pnl_percentage=float(
+                    data.get("peak_pnl_percentage", 0.0)
+                ),
+
+                peak_price=(
+                    float(data["peak_price"])
+                    if data.get("peak_price") is not None
+                    else None
+                ),
+
+                trail_tier=int(
+                    data.get("trail_tier", 0)
+                ),
+
+                is_risk_free=bool(
+                    data.get("is_risk_free", False)
+                ),
+
+                extension_active=bool(
+                    data.get("extension_active", False)
+                ),
+
+                shield_status=str(
+                    data.get("shield_status", "ACTIVE")
                 ),
             )
 
