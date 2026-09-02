@@ -711,6 +711,78 @@ async def orderbook_pressure(
 # AI SIGNALS
 # ============================================================================
 
+def _is_signal_qualified_for_profile(sig: Dict[str, Any], prof: Any) -> bool:
+    try:
+        conf = float(sig.get("confidence") or sig.get("ai_confidence") or 0.0)
+        sig_str = float(sig.get("signal_strength") or sig.get("ai_signal_strength") or 0.0)
+        exp_ret = float(sig.get("expected_return") or 0.0)
+
+        if conf < getattr(prof, "min_confidence", 0.40):
+            return False
+        if sig_str < getattr(prof, "min_signal_strength", 0.35):
+            return False
+        if exp_ret < getattr(prof, "min_expected_return", 0.003):
+            return False
+
+        # Timeframe consensus check
+        analysis = sig.get("analysis", {})
+        if isinstance(analysis, dict):
+            tf = analysis.get("timeframe_consensus", {})
+            if isinstance(tf, dict) and getattr(prof, "require_timeframe_alignment", False):
+                action = str(sig.get("action", "")).upper()
+                is_buy = "BUY" in action or "LONG" in action
+                if getattr(prof, "require_4h_direction", False):
+                    h4_agree = ("BULL" in str(tf.get("h4", "")).upper()) if is_buy else ("BEAR" in str(tf.get("h4", "")).upper())
+                    if not h4_agree:
+                        return False
+                if getattr(prof, "require_1d_confirmation", False):
+                    d1_agree = ("BULL" in str(tf.get("d1", "")).upper()) if is_buy else ("BEAR" in str(tf.get("d1", "")).upper())
+                    if not d1_agree:
+                        return False
+
+        return True
+    except Exception:
+        return True
+
+
+def _calibrate_signal_for_profile(sig: Dict[str, Any], prof: Any) -> Dict[str, Any]:
+    sig_copy = copy.deepcopy(sig)
+    try:
+        entry_p = float(sig_copy.get("price") or sig_copy.get("entry_price") or 0.0)
+        if entry_p <= 0:
+            return sig_copy
+
+        action = str(sig_copy.get("action", "BUY")).upper()
+        is_long = "BUY" in action or "LONG" in action
+        
+        # Approximate ATR if not present (default 2% of price)
+        analysis = sig_copy.get("analysis", {})
+        atr = float(analysis.get("atr", entry_p * 0.02)) if isinstance(analysis, dict) else (entry_p * 0.02)
+        if atr <= 0:
+            atr = entry_p * 0.02
+
+        tp_mult = getattr(prof, "take_profit_atr_mult", 2.0)
+        sl_mult = getattr(prof, "stop_loss_atr_mult", 1.0)
+        tp_dist = atr * tp_mult
+        sl_dist = atr * sl_mult
+
+        new_tp = round(entry_p + tp_dist if is_long else entry_p - tp_dist, 4 if entry_p < 10 else 2)
+        new_sl = round(entry_p - sl_dist if is_long else entry_p + sl_dist, 4 if entry_p < 10 else 2)
+
+        strat = sig_copy.get("strategy", {})
+        if not isinstance(strat, dict):
+            strat = {}
+        strat["stop_loss"] = new_sl
+        strat["take_profit_1"] = new_tp
+        strat["take_profit_2"] = round(entry_p + tp_dist * 1.5 if is_long else entry_p - tp_dist * 1.5, 4 if entry_p < 10 else 2)
+        sig_copy["strategy"] = strat
+        sig_copy["profile_name"] = getattr(prof, "trading_style", None) and getattr(prof.trading_style, "value", str(prof.trading_style)) or "day_trader"
+        sig_copy["max_holding_hours"] = getattr(prof, "max_holding_hours", 4)
+    except Exception:
+        pass
+    return sig_copy
+
+
 @router.get(
     "/signals/latest",
     response_model=APIResponse,
@@ -720,9 +792,13 @@ async def latest_signals(
     symbol: Optional[str] = Query(
         default=None,
     ),
+    profile: Optional[str] = Query(
+        default=None,
+        description="Optional trading profile filter: scalper, day_trader, swing, position",
+    ),
 ) -> APIResponse:
     cache = get_cache_service()
-    cache_key = f"signals:latest:{symbol or 'all'}"
+    cache_key = f"signals:latest:{symbol or 'all'}:{profile or 'all'}"
     cached_data = await cache.get_json(cache_key)
     if cached_data is not None:
         return APIResponse(
@@ -736,6 +812,12 @@ async def latest_signals(
     )
 
     try:
+        prof_cfg = None
+        if profile:
+            try:
+                prof_cfg = get_profile(profile)
+            except Exception:
+                pass
 
         if symbol:
 
@@ -764,6 +846,12 @@ async def latest_signals(
                     except Exception:
                         pass
 
+            if result and prof_cfg:
+                if not _is_signal_qualified_for_profile(result, prof_cfg):
+                    result = None
+                else:
+                    result = _calibrate_signal_for_profile(result, prof_cfg)
+
         else:
 
             result = await call_service(
@@ -775,6 +863,13 @@ async def latest_signals(
                     "get_signals",
                 ],
             )
+
+            if result and isinstance(result, list) and prof_cfg:
+                filtered_list = []
+                for s in result:
+                    if isinstance(s, dict) and _is_signal_qualified_for_profile(s, prof_cfg):
+                        filtered_list.append(_calibrate_signal_for_profile(s, prof_cfg))
+                result = filtered_list
 
         # Cache for 5 seconds to support high concurrency
         if result is not None:
@@ -1601,9 +1696,14 @@ _live_position_manager = _PersistentLivePositionManager()
     response_model=APIResponse,
     summary="Get open positions",
 )
-async def positions() -> APIResponse:
+async def positions(
+    profile: Optional[str] = Query(
+        default=None,
+        description="Optional trading profile filter: scalper, day_trader, swing, position",
+    ),
+) -> APIResponse:
     cache = get_cache_service()
-    cache_key = "portfolio:positions"
+    cache_key = f"portfolio:positions:{profile or 'all'}"
     cached = await cache.get_json(cache_key)
     if cached is not None:
         return APIResponse(
@@ -1615,6 +1715,18 @@ async def positions() -> APIResponse:
         symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "ADAUSDT", "DOTUSDT", "AVAXUSDT", "LINKUSDT", "XRPUSDT"]
         prices = {sym: get_live_symbol_price(sym) for sym in symbols}
         live_list = _live_position_manager.get_live_positions(prices)
+
+        if profile:
+            target_style = profile.lower()
+            live_list = [
+                p for p in live_list
+                if target_style in str(p.get("profile_name", "")).lower()
+                or (target_style == "scalper" and p.get("max_holding_hours", 4) <= 3)
+                or (target_style == "day_trader" and 3 < p.get("max_holding_hours", 4) <= 8)
+                or (target_style == "swing" and 8 < p.get("max_holding_hours", 4) <= 48)
+                or (target_style == "position" and p.get("max_holding_hours", 4) > 48)
+            ]
+
         formatted_positions = {p["symbol"]: p for p in live_list}
 
         await cache.set_json(cache_key, formatted_positions, ttl=1)
