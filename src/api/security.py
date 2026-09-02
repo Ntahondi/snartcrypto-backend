@@ -86,12 +86,14 @@ def get_snailguard_shield():
         settings = get_settings()
         if getattr(settings, 'SNAILGUARD_ENABLED', True):
             try:
-                # Add snailguard_python_SDK to sys.path if not present
-                sdk_path = str(Path(__file__).parent.parent.parent / "snailguard_python_SDK")
-                if sdk_path not in sys.path:
-                    sys.path.insert(0, sdk_path)
+                try:
+                    from src.snailguard.core.detector import SnailGuardDetector
+                except ImportError:
+                    sdk_path = str(Path(__file__).parent.parent.parent / "snailguard_python_SDK")
+                    if sdk_path not in sys.path:
+                        sys.path.insert(0, sdk_path)
+                    from snailguard.core.detector import SnailGuardDetector
 
-                from snailguard.core.detector import SnailGuardDetector
                 # Use Enterprise tier license key
                 _snailguard_detector = SnailGuardDetector(
                     api_key="SG-ENT-pL0oK9iJ8uH7yG6tF5rD4eS3wQ2aZ1xV",
