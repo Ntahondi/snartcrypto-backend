@@ -1702,22 +1702,30 @@ async def performance() -> APIResponse:
     summary="Get Telegram service status",
 )
 async def telegram_status() -> APIResponse:
-
     telegram = require_service(
         services.telegram_service,
         "TelegramService",
     )
 
     try:
-
-        result = await call_service(
-            telegram,
-            [
-                "get_status",
-                "status",
-                "get_telegram_status",
-            ],
-        )
+        if hasattr(telegram, "health_check"):
+            result = telegram.health_check()
+            if asyncio.iscoroutine(result):
+                result = await result
+        elif hasattr(telegram, "get_status"):
+            result = telegram.get_status()
+            if asyncio.iscoroutine(result):
+                result = await result
+        else:
+            result = await call_service(
+                telegram,
+                [
+                    "get_status",
+                    "status",
+                    "health_check",
+                    "get_telegram_status",
+                ],
+            )
 
         return APIResponse(
             timestamp=utc_now(),

@@ -2019,3 +2019,11 @@ class TelegramService:
                 else "degraded"
             ),
         }
+
+    def get_status(self) -> Dict[str, Any]:
+        """Return Telegram service status."""
+        return self.health_check()
+
+    def status(self) -> Dict[str, Any]:
+        """Return Telegram service status."""
+        return self.health_check()
