@@ -1059,7 +1059,38 @@ class TelegramService:
         formatted_entry = self._format_price(entry)
         formatted_exit = self._format_price(exit_price)
 
-        if pnl > 0 or "PROFIT" in reason or "TP" in reason or "WIN" in reason:
+        if "TRAILING" in reason or reason == "TRAILING_PROFIT_LOCK":
+            # 🛡️💰 AI TRAILING PROFIT LOCK SECURED 💰🛡️
+            pnl_sign = "+" if pnl >= 0 else ""
+            pct_sign = "+" if pnl_pct >= 0 else ""
+            message = (
+                "🛡️ <b>AI PROFIT SHIELD • PROFIT SECURED!</b> 💰\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"💎 <b>#{self._escape(symbol)}USDT</b> • 🟢 <b>{action_label}</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"🎯 <b>Status:</b> <b>TRAILING PROFIT LOCK TRIGGERED</b>\n"
+                f"📈 <b>Protected Gain:</b> <code>{pct_sign}{abs(pnl_pct):.2f}%</code> 🔥\n"
+                f"💵 <b>Net Banked PnL:</b> <code>{pnl_sign}${abs(pnl):,.2f}</code> 💰\n\n"
+                f"📍 <b>Entry:</b> <code>{formatted_entry}</code>\n"
+                f"🏁 <b>Exit:</b> <code>{formatted_exit}</code>\n"
+                f"🛡️ <b>Trigger:</b> <b>AI Trailing Stop Lock</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "🏆 <i>AI Profit Shield prevented profit giveback on market pullback.</i>"
+            )
+        elif "BREAKEVEN" in reason or reason == "DYNAMIC_BREAKEVEN":
+            # 🛡️ 100% CAPITAL PROTECTED AT BREAKEVEN 🛡️
+            message = (
+                "🛡️ <b>AI PROFIT SHIELD • CAPITAL PROTECTED</b> 🛡️\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"💎 <b>#{self._escape(symbol)}USDT</b> • 🟢 <b>{action_label}</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                f"🎯 <b>Status:</b> <b>DYNAMIC BREAKEVEN HIT</b>\n"
+                f"📊 <b>Result:</b> <code>+$0.00 (Risk-Free Exit)</code>\n"
+                f"📍 <b>Entry:</b> <code>{formatted_entry}</code> ➔ <b>Exit:</b> <code>{formatted_exit}</code>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "<i>Stop Loss was moved to Breakeven at +2.0% gain. Zero loss sustained.</i>"
+            )
+        elif pnl > 0 or "PROFIT" in reason or "TP" in reason or "WIN" in reason:
             # 🎉 CELEBRATORY WIN PRESENTATION 🎉
             pnl_sign = "+"
             pct_sign = "+"

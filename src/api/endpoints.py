@@ -1168,6 +1168,13 @@ class _PersistentLivePositionManager:
                 "take_profit": tp,
                 "pnl": 0.0,
                 "pnl_percentage": 0.0,
+                "peak_pnl_percentage": 0.0,
+                "peak_price": ref_entry,
+                "trail_tier": 0,
+                "is_risk_free": False,
+                "extension_active": False,
+                "extension_granted": False,
+                "shield_status": "ACTIVE",
                 "status": "OPEN",
                 "max_holding_hours": max_hours,
                 "session_id": "live_paper_session",
@@ -1197,14 +1204,14 @@ class _PersistentLivePositionManager:
                 ("BTCUSDT", "BUY", 85400.0, 89250.0, 1.2, 4620.0, 4.51, "WIN", "TAKE_PROFIT", 210, 30),
                 ("ETHUSDT", "BUY", 2180.0, 2295.0, 6.5, 747.5, 5.28, "WIN", "TAKE_PROFIT", 340, 75),
                 ("SOLUSDT", "BUY", 192.50, 186.20, 35.0, -220.50, -3.27, "LOSS", "STOP_LOSS", 480, 190),
-                ("BNBUSDT", "BUY", 605.00, 632.50, 12.0, 330.00, 4.55, "WIN", "TAKE_PROFIT", 600, 240),
+                ("BNBUSDT", "BUY", 605.00, 632.50, 12.0, 330.00, 4.55, "WIN", "TRAILING_PROFIT_LOCK", 600, 240),
                 ("ADAUSDT", "SELL", 0.780, 0.742, 8500.0, 323.00, 4.87, "WIN", "TAKE_PROFIT", 750, 380),
                 ("AVAXUSDT", "BUY", 26.40, 28.10, 220.0, 374.00, 6.44, "WIN", "TAKE_PROFIT", 900, 510),
-                ("LINKUSDT", "BUY", 16.50, 17.40, 380.0, 342.00, 5.45, "WIN", "TAKE_PROFIT", 1100, 680),
+                ("LINKUSDT", "BUY", 16.50, 17.40, 380.0, 342.00, 5.45, "WIN", "DYNAMIC_BREAKEVEN", 1100, 680),
                 ("DOTUSDT", "BUY", 7.40, 7.15, 950.0, -237.50, -3.38, "LOSS", "STOP_LOSS", 1300, 890),
                 ("XRPUSDT", "BUY", 2.15, 2.32, 3000.0, 510.00, 7.91, "WIN", "TAKE_PROFIT", 1500, 1020),
                 ("SOLUSDT", "BUY", 178.00, 187.20, 30.0, 276.00, 5.17, "WIN", "TAKE_PROFIT", 1800, 1250),
-                ("ETHUSDT", "BUY", 2120.0, 2230.0, 5.0, 550.00, 5.19, "WIN", "TAKE_PROFIT", 2200, 1500),
+                ("ETHUSDT", "BUY", 2120.0, 2230.0, 5.0, 550.00, 5.19, "WIN", "TRAILING_PROFIT_LOCK", 2200, 1500),
                 ("BTCUSDT", "BUY", 83200.0, 86950.0, 1.0, 3750.00, 4.51, "WIN", "TAKE_PROFIT", 2600, 1800),
             ]
 
@@ -1229,6 +1236,11 @@ class _PersistentLivePositionManager:
                         "close_reason": reason,
                         "stop_loss": round(entry * 0.965, 4 if entry < 10 else 2),
                         "take_profit": round(entry * 1.055, 4 if entry < 10 else 2),
+                        "peak_pnl_percentage": max(pnl_pct, 4.0),
+                        "peak_price": exit_p,
+                        "trail_tier": 2 if "TRAILING" in reason else (1 if "BREAKEVEN" in reason else 0),
+                        "is_risk_free": "TRAILING" in reason or "BREAKEVEN" in reason,
+                        "extension_active": False,
                         "ai_confidence": 0.88,
                         "ai_signal_strength": 0.82,
                         "market_regime": "BULLISH_TREND" if act == "BUY" else "BEARISH_TREND",
@@ -1261,6 +1273,47 @@ class _PersistentLivePositionManager:
             tp = pos["take_profit"]
             max_hours = pos.get("max_holding_hours", 4)
 
+            # Compute current mark-to-market PnL against entry price
+            if is_long:
+                pnl = round((curr_p - entry_p) * qty, 2)
+                pnl_pct = round(((curr_p - entry_p) / entry_p) * 100, 2) if entry_p > 0 else 0.0
+            else:
+                pnl = round((entry_p - curr_p) * qty, 2)
+                pnl_pct = round(((entry_p - curr_p) / entry_p) * 100, 2) if entry_p > 0 else 0.0
+
+            # 🛡️ AI PROFIT SHIELD: Peak tracking & Dynamic Trailing
+            peak_pnl_pct = max(pos.get("peak_pnl_percentage", 0.0), pnl_pct)
+            pos["peak_pnl_percentage"] = peak_pnl_pct
+            if pos.get("peak_price") is None:
+                pos["peak_price"] = curr_p
+            else:
+                if is_long and curr_p > pos["peak_price"]:
+                    pos["peak_price"] = curr_p
+                elif not is_long and curr_p < pos["peak_price"]:
+                    pos["peak_price"] = curr_p
+
+            current_tier = pos.get("trail_tier", 0)
+
+            # Tier 1: Breakeven Lock at +2.0% gain
+            if peak_pnl_pct >= 2.0 and current_tier < 1:
+                pos["trail_tier"] = 1
+                pos["is_risk_free"] = True
+                be_sl = round(entry_p * 1.002 if is_long else entry_p * 0.998, 4 if entry_p < 10 else 2)
+                if (is_long and be_sl > sl) or (not is_long and be_sl < sl):
+                    pos["stop_loss"] = be_sl
+                    sl = be_sl
+                logger.info(f"🛡️ AI Profit Shield Tier 1 Activated for {sym}: SL moved to Breakeven ${sl} (peak={peak_pnl_pct}%)")
+
+            # Tier 2: Profit Lock at +3.5% gain (+1.8% locked)
+            if peak_pnl_pct >= 3.5 and current_tier < 2:
+                pos["trail_tier"] = 2
+                pos["is_risk_free"] = True
+                lock_sl = round(entry_p * 1.018 if is_long else entry_p * 0.982, 4 if entry_p < 10 else 2)
+                if (is_long and lock_sl > sl) or (not is_long and lock_sl < sl):
+                    pos["stop_loss"] = lock_sl
+                    sl = lock_sl
+                logger.info(f"💰 AI Profit Shield Tier 2 Activated for {sym}: SL locked at +1.8% gain ${sl} (peak={peak_pnl_pct}%)")
+
             # Parse entry time
             try:
                 entry_dt = datetime.fromisoformat(pos["entry_time"])
@@ -1271,17 +1324,41 @@ class _PersistentLivePositionManager:
 
             elapsed_hours = (now - entry_dt).total_seconds() / 3600.0
 
+            # ⏳ Smart Max-Capped Recovery Extension (at 4h check, max 6h hard cap)
+            if elapsed_hours >= 4.0 and not pos.get("extension_granted", False):
+                regime = pos.get("market_regime", "BULLISH_TREND")
+                if peak_pnl_pct >= 1.5 and -1.5 <= pnl_pct <= -0.3 and (regime == "BULLISH_TREND" if is_long else regime == "BEARISH_TREND"):
+                    pos["extension_granted"] = True
+                    pos["extension_active"] = True
+                    pos["max_holding_hours"] = 6
+                    max_hours = 6
+                    logger.info(f"⏳ AI Smart Recovery Extension (+2h) granted for {sym} | peak={peak_pnl_pct}% | pnl={pnl_pct}%")
+
             # 1. Check Take Profit Hit
             tp_hit = (is_long and curr_p >= tp) or (not is_long and curr_p <= tp)
-            # 2. Check Stop Loss Hit
+            # 2. Check Stop Loss / Trailing Lock Hit
             sl_hit = (is_long and curr_p <= sl) or (not is_long and curr_p >= sl)
             # 3. Check Timeout Expiry
             timeout_hit = elapsed_hours >= max_hours
 
             if tp_hit or sl_hit or timeout_hit:
-                # Close this position and record closed trade execution
-                exit_reason = "TAKE_PROFIT" if tp_hit else ("STOP_LOSS" if sl_hit else "TIMEOUT")
-                logger.info(f"⚡ Live Position Closed for {sym}: {exit_reason} at ${curr_p}")
+                # Determine detailed close reason
+                if tp_hit:
+                    exit_reason = "TAKE_PROFIT"
+                elif sl_hit:
+                    if pos.get("trail_tier", 0) >= 2:
+                        exit_reason = "TRAILING_PROFIT_LOCK"
+                    elif pos.get("trail_tier", 0) == 1:
+                        exit_reason = "DYNAMIC_BREAKEVEN"
+                    else:
+                        exit_reason = "STOP_LOSS"
+                else:
+                    if pos.get("extension_active", False):
+                        exit_reason = "TIMEOUT_RECOVERY"
+                    else:
+                        exit_reason = "TIMEOUT"
+
+                logger.info(f"⚡ Live Position Closed for {sym}: {exit_reason} at ${curr_p} (PnL: {pnl_pct}%, Peak: {peak_pnl_pct}%)")
 
                 # Calculate final realized PnL
                 if is_long:
@@ -1308,6 +1385,11 @@ class _PersistentLivePositionManager:
                     "close_reason": exit_reason,
                     "stop_loss": sl,
                     "take_profit": tp,
+                    "peak_pnl_percentage": peak_pnl_pct,
+                    "peak_price": pos.get("peak_price", curr_p),
+                    "trail_tier": pos.get("trail_tier", 0),
+                    "is_risk_free": bool(pos.get("is_risk_free", False)),
+                    "extension_active": bool(pos.get("extension_active", False)),
                     "ai_confidence": pos.get("ai_confidence", 0.88),
                     "ai_signal_strength": pos.get("ai_signal_strength", 0.80),
                     "market_regime": pos.get("market_regime", "BULLISH_TREND"),
@@ -1352,19 +1434,30 @@ class _PersistentLivePositionManager:
                 pos["stop_loss"] = new_sl
                 pos["take_profit"] = new_tp
                 pos["close_reason"] = exit_reason
+                pos["peak_pnl_percentage"] = 0.0
+                pos["peak_price"] = new_entry
+                pos["trail_tier"] = 0
+                pos["is_risk_free"] = False
+                pos["extension_active"] = False
+                pos["extension_granted"] = False
+                pos["max_holding_hours"] = 4
                 entry_p = new_entry
 
-            # Compute accurate live mark-to-market PnL against the fixed entry price
-            if is_long:
-                pnl = round((curr_p - entry_p) * qty, 2)
-                pnl_pct = round(((curr_p - entry_p) / entry_p) * 100, 2) if entry_p > 0 else 0.0
+            # Shield status label
+            tier = pos.get("trail_tier", 0)
+            if tier >= 2:
+                shield_status = "PROFIT_LOCKED"
+            elif tier == 1:
+                shield_status = "RISK_FREE_BREAKEVEN"
+            elif pos.get("extension_active", False):
+                shield_status = "RECOVERY_EXTENDED"
             else:
-                pnl = round((entry_p - curr_p) * qty, 2)
-                pnl_pct = round(((entry_p - curr_p) / entry_p) * 100, 2) if entry_p > 0 else 0.0
+                shield_status = "ACTIVE"
 
             pos["current_price"] = curr_p
             pos["pnl"] = pnl
             pos["pnl_percentage"] = pnl_pct
+            pos["shield_status"] = shield_status
             result_list.append(pos.copy())
 
         return result_list

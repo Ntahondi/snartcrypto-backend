@@ -117,6 +117,11 @@ class DataStorage:
                 close_reason TEXT NOT NULL,
                 stop_loss REAL,
                 take_profit REAL,
+                peak_pnl_percentage REAL DEFAULT 0.0,
+                peak_price REAL,
+                trail_tier INTEGER DEFAULT 0,
+                is_risk_free INTEGER DEFAULT 0,
+                extension_active INTEGER DEFAULT 0,
                 ai_confidence REAL DEFAULT 0.88,
                 ai_signal_strength REAL DEFAULT 0.82,
                 market_regime TEXT DEFAULT 'BULLISH_TREND',
@@ -124,9 +129,23 @@ class DataStorage:
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        # Safe column migrations for existing databases
+        for col_def in [
+            ("peak_pnl_percentage", "REAL DEFAULT 0.0"),
+            ("peak_price", "REAL"),
+            ("trail_tier", "INTEGER DEFAULT 0"),
+            ("is_risk_free", "INTEGER DEFAULT 0"),
+            ("extension_active", "INTEGER DEFAULT 0"),
+        ]:
+            try:
+                cursor.execute(f"ALTER TABLE closed_trades ADD COLUMN {col_def[0]} {col_def[1]}")
+            except sqlite3.OperationalError:
+                pass
+
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_closed_trades_sym_time ON closed_trades(symbol, exit_time DESC)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_closed_trades_exit_time ON closed_trades(exit_time DESC)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_closed_trades_outcome ON closed_trades(outcome)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_closed_trades_reason ON closed_trades(close_reason)')
         
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # PATTERN DRAWINGS TABLE
@@ -735,9 +754,10 @@ class DataStorage:
                         INSERT OR REPLACE INTO closed_trades (
                             id, symbol, action, entry_price, exit_price, quantity,
                             pnl, pnl_percentage, outcome, entry_time, exit_time,
-                            close_reason, stop_loss, take_profit, ai_confidence,
-                            ai_signal_strength, market_regime, execution_status
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            close_reason, stop_loss, take_profit, peak_pnl_percentage,
+                            peak_price, trail_tier, is_risk_free, extension_active,
+                            ai_confidence, ai_signal_strength, market_regime, execution_status
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         trade.get("id"),
                         trade.get("symbol"),
@@ -753,6 +773,11 @@ class DataStorage:
                         trade.get("close_reason", "TAKE_PROFIT"),
                         float(trade.get("stop_loss", 0.0)) if trade.get("stop_loss") is not None else None,
                         float(trade.get("take_profit", 0.0)) if trade.get("take_profit") is not None else None,
+                        float(trade.get("peak_pnl_percentage", 0.0)),
+                        float(trade.get("peak_price", 0.0)) if trade.get("peak_price") is not None else None,
+                        int(trade.get("trail_tier", 0)),
+                        1 if trade.get("is_risk_free") else 0,
+                        1 if trade.get("extension_active") else 0,
                         float(trade.get("ai_confidence", 0.88)),
                         float(trade.get("ai_signal_strength", 0.82)),
                         trade.get("market_regime", "BULLISH_TREND"),
