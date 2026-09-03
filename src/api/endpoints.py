@@ -3198,11 +3198,12 @@ class RiskConfigRequest(BaseModel):
 )
 async def exchange_server_info() -> APIResponse:
     """Provides server IP restrictions and required exchange permissions."""
+    server_ip = getattr(settings, "SERVER_IP", "138.197.181.202") or "138.197.181.202"
     return APIResponse(
         timestamp=utc_now(),
         data={
-            "server_ip": "185.199.108.153",
-            "recommended_ips": ["185.199.108.153", "185.199.109.153"],
+            "server_ip": server_ip,
+            "recommended_ips": [server_ip],
             "required_permissions": [
                 "Enable Reading",
                 "Enable Spot & Margin Trading (or Enable Futures)",

@@ -208,6 +208,11 @@ class Settings(BaseSettings):
         description="SnailGuard Enterprise license key for threat detection.",
     )
 
+    SERVER_IP: str = Field(
+        default="138.197.181.202",
+        description="Public server IP address for exchange API key whitelisting.",
+    )
+
     API_PREFIX: str = Field(
         default="/api/v1",
         description="REST API prefix.",
