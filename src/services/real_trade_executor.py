@@ -440,7 +440,11 @@ class RealTradeExecutor:
             use_testnet = self.use_testnet if binance_testnet is None else binance_testnet
 
             if use_testnet:
-                exchange.set_sandbox_mode(True)
+                if hasattr(exchange, "enable_demo_trading"):
+                    exchange.enable_demo_trading(True)
+                else:
+                    exchange.options["disableFuturesSandboxWarning"] = True
+                    exchange.set_sandbox_mode(True)
 
             try:
                 await exchange.load_time_difference()

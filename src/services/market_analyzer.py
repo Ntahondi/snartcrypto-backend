@@ -290,32 +290,32 @@ class MarketAnalyzer:
             return True
 
         # ---------------------------------------------------------
-        # 7. Initial signal evaluation
+        # 7. Model readiness verification (Warm-up without persisting or opening positions)
         # ---------------------------------------------------------
 
         self.logger.info(
-            "🎯 Running initial signal evaluation..."
+            "🎯 Verifying model inference readiness (Warm-up)..."
         )
 
         for symbol in usable_symbols:
             try:
-                signal = await self.generate_signal(symbol)
+                # Generate signal in warm-up mode (persist=False so it is not stored in DB,
+                # not added to latest_signals, and never executed as a live trade/position).
+                signal = await self.generate_signal(symbol, persist=False)
 
                 if signal:
                     self.logger.info(
-                        f"🚀 Initial Signal [{symbol}]: "
-                        f"{signal.get('action')} "
-                        f"(Confidence: "
-                        f"{signal.get('confidence', 0):.2f})"
+                        f"✅ Model Warm-up [{symbol}]: Ready "
+                        f"(Confidence: {signal.get('confidence', 0):.2f})"
                     )
                 else:
                     self.logger.info(
-                        f"⏭️ No initial signal for {symbol}"
+                        f"ℹ️ Model Warm-up [{symbol}]: Ready (No directional bias)"
                     )
 
             except Exception as exc:
                 self.logger.error(
-                    f"❌ Initial signal failure for {symbol}: {exc}",
+                    f"❌ Model warm-up error for {symbol}: {exc}",
                     exc_info=True,
                 )
 
@@ -1000,6 +1000,7 @@ class MarketAnalyzer:
     async def generate_signal(
         self,
         symbol: str,
+        persist: bool = True,
     ) -> Optional[Dict]:
         """
         Generate exactly one committee decision for the current
@@ -1099,16 +1100,6 @@ class MarketAnalyzer:
                     ).isoformat()
                 )
 
-                self.performance_metrics[
-                    "total_signals"
-                ] += 1
-
-                self.performance_metrics[
-                    "last_signal_time"
-                ] = datetime.now(
-                    timezone.utc
-                ).isoformat()
-
                 # -------------------------------------------------
                 # Attach derivatives.
                 # -------------------------------------------------
@@ -1163,26 +1154,37 @@ class MarketAnalyzer:
                         f"for {symbol}: {exc}"
                     )
 
-                self.latest_signals[
-                    symbol
-                ] = signal
+                if persist:
+                    self.performance_metrics[
+                        "total_signals"
+                    ] += 1
 
-                self.logger.info(
-                    f"🎯 SIGNAL [{symbol}] "
-                    f"{signal.get('action')} | "
-                    f"Confidence: "
-                    f"{signal.get('confidence', 0):.1%} | "
-                    f"Strength: "
-                    f"{signal.get('signal_strength', 0):.1%}"
-                )
+                    self.performance_metrics[
+                        "last_signal_time"
+                    ] = datetime.now(
+                        timezone.utc
+                    ).isoformat()
 
-                # -------------------------------------------------
-                # Persist signal.
-                # -------------------------------------------------
+                    self.latest_signals[
+                        symbol
+                    ] = signal
 
-                await self._save_signal_safely(
-                    signal
-                )
+                    self.logger.info(
+                        f"🎯 SIGNAL [{symbol}] "
+                        f"{signal.get('action')} | "
+                        f"Confidence: "
+                        f"{signal.get('confidence', 0):.1%} | "
+                        f"Strength: "
+                        f"{signal.get('signal_strength', 0):.1%}"
+                    )
+
+                    # -------------------------------------------------
+                    # Persist signal.
+                    # -------------------------------------------------
+
+                    await self._save_signal_safely(
+                        signal
+                    )
 
                 return signal
 
