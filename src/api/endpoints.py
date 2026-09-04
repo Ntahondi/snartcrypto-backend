@@ -1243,66 +1243,12 @@ class _PersistentLivePositionManager:
                 logger.warning(f"DataStorage init in LivePositionManager: {e}")
                 self.data_storage = None
 
-        now = datetime.now(timezone.utc)
-        all_symbols = [
-            ("BTCUSDT", 87250.0, 1.2, "BUY", 0.89, 4),
-            ("ETHUSDT", 2210.0, 6.5, "BUY", 0.85, 4),
-            ("SOLUSDT", 188.0, 35.0, "BUY", 0.91, 6),
-            ("BNBUSDT", 618.0, 12.0, "BUY", 0.78, 4),
-            ("ADAUSDT", 0.745, 8500.0, "SELL", 0.82, 3),
-            ("DOTUSDT", 7.25, 950.0, "BUY", 0.80, 5),
-            ("AVAXUSDT", 27.80, 220.0, "BUY", 0.87, 4),
-            ("LINKUSDT", 17.15, 380.0, "BUY", 0.84, 4),
-            ("XRPUSDT", 2.28, 3000.0, "BUY", 0.79, 6),
-        ]
+        # Positions start vacant/empty. Genuine positions are opened dynamically
+        # ONLY when approved AI ensemble signals arrive at sealed candle closes.
+        if not hasattr(self, "positions") or self.positions is None:
+            self.positions = {}
 
-        # Stagger entry times so different positions have different elapsed times
-        offsets_minutes = [45, 95, 140, 25, 190, 60, 110, 80, 15]
-
-        for idx, (sym, ref_entry, qty, action, conf, max_hours) in enumerate(all_symbols):
-            entry_time = now - timedelta(minutes=offsets_minutes[idx % len(offsets_minutes)])
-            if action == "BUY":
-                sl = round(ref_entry * 0.965, 4 if ref_entry < 10 else 2)
-                tp = round(ref_entry * 1.055, 4 if ref_entry < 10 else 2)
-            else:
-                sl = round(ref_entry * 1.035, 4 if ref_entry < 10 else 2)
-                tp = round(ref_entry * 0.945, 4 if ref_entry < 10 else 2)
-
-            self.positions[sym] = {
-                "id": f"pos_{sym.lower()}_{int(entry_time.timestamp())}",
-                "symbol": sym,
-                "action": action,
-                "entry_price": ref_entry,
-                "current_price": ref_entry,
-                "quantity": qty,
-                "entry_time": entry_time.isoformat(),
-                "stop_loss": sl,
-                "take_profit": tp,
-                "pnl": 0.0,
-                "pnl_percentage": 0.0,
-                "peak_pnl_percentage": 0.0,
-                "peak_price": ref_entry,
-                "trail_tier": 0,
-                "is_risk_free": False,
-                "extension_active": False,
-                "extension_granted": False,
-                "shield_status": "ACTIVE",
-                "status": "OPEN",
-                "max_holding_hours": max_hours,
-                "session_id": "live_paper_session",
-                "signal_id": f"sig_{sym}_ai",
-                "timeframe": "1h",
-                "profile_name": "day_trader",
-                "ai_confidence": conf,
-                "ai_signal_strength": round(conf * 0.95, 2),
-                "expected_return": round(abs((tp - ref_entry) / ref_entry * 100), 2),
-                "expected_time_to_profit": max(1, max_hours - 1),
-                "ensemble_agreement": 1.0,
-                "market_regime": "BULLISH_TREND" if action == "BUY" else "BEARISH_TREND",
-                "execution_status": "ACTIVE",
-            }
-
-        # Load stored closed trades from database or seed initial history
+        # Load stored closed trades from database
         stored_trades = []
         try:
             if self.data_storage:
@@ -1575,10 +1521,15 @@ class _PersistentLivePositionManager:
                 # 📢 Broadcast closed trade directly to Telegram VIP channel
                 try:
                     tg = getattr(services, "telegram_service", None)
+                    if not tg:
+                        from src.services.telegram_service import TelegramService
+                        tg = TelegramService()
                     if tg and getattr(tg, "enable_telegram", False):
-                        loop = asyncio.get_event_loop()
-                        if loop.is_running():
+                        try:
+                            loop = asyncio.get_running_loop()
                             loop.create_task(tg.broadcast_trade_closed(closed_trade))
+                        except RuntimeError:
+                            asyncio.run(tg.broadcast_trade_closed(closed_trade))
                 except Exception as tg_err:
                     logger.warning(f"Telegram trade closed broadcast error: {tg_err}")
 

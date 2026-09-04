@@ -1320,6 +1320,12 @@ class MarketAnalyzer:
                     f"Entry: ${float(entry_price):.6f}"
                 )
 
+                try:
+                    from src.api.endpoints import _live_position_manager
+                    _live_position_manager.open_signal_position(signal)
+                except Exception as lpm_err:
+                    self.logger.debug(f"Live position manager sync pass: {lpm_err}")
+
                 await self._broadcast_signal_safely(
                     signal
                 )

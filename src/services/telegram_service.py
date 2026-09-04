@@ -1161,6 +1161,9 @@ class TelegramService:
 
         symbol = self._clean_symbol(_val("symbol", "UNKNOWN"))
         action = str(_val("action", "BUY")).upper()
+        is_buy = action in ("BUY", "LONG")
+        action_badge = "🟢 LONG" if is_buy else "🔴 SHORT"
+
         entry = self._safe_float(_val("entry_price", 0))
         exit_price = self._safe_float(_val("exit_price", _val("current_price", 0)))
         pnl = self._safe_float(_val("pnl", 0))
@@ -1178,9 +1181,6 @@ class TelegramService:
             lev = self._safe_float(_val("leverage", 3.0))
             roe_pct = pnl_pct * (lev if lev > 0 else 3.0)
         reason = str(_val("close_reason", _val("exit_reason", "TAKE_PROFIT"))).upper()
-
-        is_buy = action in ("BUY", "LONG")
-        action_badge = "🟢 LONG" if is_buy else "🔴 SHORT"
 
         formatted_entry = self._format_price(entry)
         formatted_exit = self._format_price(exit_price)
