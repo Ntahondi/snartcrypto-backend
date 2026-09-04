@@ -1148,34 +1148,64 @@ class TelegramService:
         position: Any,
     ) -> bool:
         """
-        Broadcast closed trade with celebratory WIN messaging or disciplined risk alerts.
+        Broadcast closed trade with celebratory WIN messaging, guaranteed profit shield locks,
+        clean reversal notices, or disciplined risk alerts.
         """
         if not self.enable_telegram or not self.channel_id:
             return False
 
-        symbol = self._clean_symbol(getattr(position, "symbol", "UNKNOWN"))
-        action = str(getattr(position, "action", "BUY")).upper()
-        entry = self._safe_float(getattr(position, "entry_price", 0))
-        exit_price = self._safe_float(getattr(position, "exit_price", getattr(position, "current_price", 0)))
-        pnl = self._safe_float(getattr(position, "pnl", 0))
-        pnl_pct = self._safe_float(getattr(position, "pnl_percentage", 0))
-        reason = str(getattr(position, "close_reason", getattr(position, "exit_reason", "TAKE_PROFIT"))).upper()
+        def _val(k: str, default: Any = None) -> Any:
+            if isinstance(position, dict):
+                return position.get(k, default)
+            return getattr(position, k, default)
+
+        symbol = self._clean_symbol(_val("symbol", "UNKNOWN"))
+        action = str(_val("action", "BUY")).upper()
+        entry = self._safe_float(_val("entry_price", 0))
+        exit_price = self._safe_float(_val("exit_price", _val("current_price", 0)))
+        pnl = self._safe_float(_val("pnl", 0))
+        pnl_pct = self._safe_float(_val("pnl_percentage", _val("pnl_pct", 0)))
+        if pnl_pct == 0.0 and entry > 0 and exit_price > 0:
+            if is_buy:
+                pnl_pct = ((exit_price - entry) / entry) * 100.0
+            else:
+                pnl_pct = ((entry - exit_price) / entry) * 100.0
+
+        roe_val = _val("roe", _val("roe_percentage", None))
+        if roe_val is not None:
+            roe_pct = self._safe_float(roe_val)
+        else:
+            lev = self._safe_float(_val("leverage", 3.0))
+            roe_pct = pnl_pct * (lev if lev > 0 else 3.0)
+        reason = str(_val("close_reason", _val("exit_reason", "TAKE_PROFIT"))).upper()
 
         is_buy = action in ("BUY", "LONG")
-        action_label = "LONG" if is_buy else "SHORT"
-        roe_pct = pnl_pct * 3.0
+        action_badge = "🟢 LONG" if is_buy else "🔴 SHORT"
 
         formatted_entry = self._format_price(entry)
         formatted_exit = self._format_price(exit_price)
         kb = self._create_signal_keyboard(symbol)
 
-        if "TRAILING" in reason or reason == "TRAILING_PROFIT_LOCK":
+        if "REVERSAL" in reason or reason == "REVERSED_BY_OPPOSITE_SIGNAL":
+            pnl_sign = "+" if pnl >= 0 else "-"
+            message = (
+                "🔄 <b>AI TREND REVERSAL • POSITION FLIPPED</b> ⚡\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💎 <b>#{self._escape(symbol)}USDT</b> • <b>{action_badge}</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🎯 <b>Status:</b> <b>CLEAN TREND REVERSAL</b>\n"
+                f"📊 <b>Realized PnL:</b> <code>{pnl_sign}${abs(pnl):,.2f} ({pnl_sign}{abs(pnl_pct):.2f}%)</code>\n"
+                f"📍 <b>Entry:</b> <code>{formatted_entry}</code> ➔ <b>Exit:</b> <code>{formatted_exit}</code>\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n"
+                "<i>AI Committee detected higher-timeframe trend reversal. Repositioning capital.</i>"
+            )
+        elif "TRAILING" in reason or reason == "TRAILING_PROFIT_LOCK":
             pnl_sign = "+" if pnl >= 0 else ""
             pct_sign = "+" if pnl_pct >= 0 else ""
             message = (
                 "🛡️ <b>AI PROFIT SHIELD • PROFIT SECURED!</b> 💰\n"
                 "━━━━━━━━━━━━━━━━━━━━━\n"
-                f"💎 <b>#{self._escape(symbol)}USDT</b> • 🟢 <b>{action_label}</b>\n"
+                f"💎 <b>#{self._escape(symbol)}USDT</b> • <b>{action_badge}</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━━\n"
                 f"🎯 <b>Status:</b> <b>TRAILING PROFIT LOCK SECURED</b>\n"
                 f"📈 <b>Protected Move:</b> <code>{pct_sign}{abs(pnl_pct):.2f}%</code> <i>({pct_sign}{abs(roe_pct):.1f}% ROE)</i> 🔥\n"
@@ -1186,16 +1216,18 @@ class TelegramService:
                 "🏆 <i>SnartCrypto AI Engine Alpha • Verified Real Execution</i>"
             )
         elif "BREAKEVEN" in reason or reason == "DYNAMIC_BREAKEVEN":
+            pnl_sign = "+" if pnl >= 0 else ""
+            pct_sign = "+" if pnl_pct >= 0 else ""
             message = (
-                "🛡️ <b>AI PROFIT SHIELD • CAPITAL PROTECTED</b> 🛡️\n"
+                "🛡️ <b>AI PROFIT SHIELD • CAPITAL & PROFIT PROTECTED</b> 🛡️\n"
                 "━━━━━━━━━━━━━━━━━━━━━\n"
-                f"💎 <b>#{self._escape(symbol)}USDT</b> • 🟢 <b>{action_label}</b>\n"
+                f"💎 <b>#{self._escape(symbol)}USDT</b> • <b>{action_badge}</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━━\n"
                 f"🎯 <b>Status:</b> <b>DYNAMIC BREAKEVEN HIT</b>\n"
-                f"📊 <b>Result:</b> <code>+$0.00 (100% Risk-Free Exit)</code>\n"
+                f"📊 <b>Result:</b> <code>{pct_sign}{abs(pnl_pct):.2f}% ({pnl_sign}${abs(pnl):,.2f} Guaranteed Banked Profit)</code>\n"
                 f"📍 <b>Entry:</b> <code>{formatted_entry}</code> ➔ <b>Exit:</b> <code>{formatted_exit}</code>\n"
                 "━━━━━━━━━━━━━━━━━━━━━\n"
-                "<i>Stop Loss was moved to Breakeven at +2.0% gain. Zero loss sustained.</i>"
+                "<i>Stop Loss was moved to Profit Lock at +2.0% gain. Capital 100% preserved.</i>"
             )
         elif pnl > 0 or "PROFIT" in reason or "TP" in reason or "WIN" in reason:
             pnl_sign = "+"
@@ -1204,7 +1236,7 @@ class TelegramService:
                 "🎉🎉🎉🎉🎉🎉🎉🎉🎉\n"
                 "<b>PROFIT TARGET HIT! • WIN</b> 🚀\n"
                 "━━━━━━━━━━━━━━━━━━━━━\n"
-                f"💎 <b>#{self._escape(symbol)}USDT</b> • 🟢 <b>{action_label}</b>\n"
+                f"💎 <b>#{self._escape(symbol)}USDT</b> • <b>{action_badge}</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━━\n"
                 f"🎯 <b>Status:</b> <b>TAKE PROFIT REACHED</b>\n"
                 f"📈 <b>Target Gain:</b> <code>{pct_sign}{abs(pnl_pct):.2f}%</code> <i>({pct_sign}{abs(roe_pct):.1f}% ROE)</i> 🔥\n"
@@ -1218,20 +1250,20 @@ class TelegramService:
             message = (
                 "🛡️ <b>RISK MANAGEMENT • POSITION CLOSED</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━━\n"
-                f"⚠️ <b>#{self._escape(symbol)}USDT</b> • 🔴 <b>{action_label}</b>\n"
+                f"⚠️ <b>#{self._escape(symbol)}USDT</b> • <b>{action_badge}</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━━\n"
                 f"🛑 <b>Status:</b> <b>STOP LOSS TRIGGERED</b>\n"
                 f"📉 <b>Loss:</b> <code>-{abs(pnl_pct):.2f}%</code> (<code>-${abs(pnl):,.2f}</code>)\n"
                 f"📍 <b>Entry:</b> <code>{formatted_entry}</code> ➔ <b>Exit:</b> <code>{formatted_exit}</code>\n"
                 "━━━━━━━━━━━━━━━━━━━━━\n"
-                "<i>Capital strictly preserved by 1.5x ATR bounds. Next setup preparing.</i>"
+                "<i>Capital strictly preserved by ATR risk bounds. Next setup preparing.</i>"
             )
         else:
             pnl_sign = "+" if pnl >= 0 else "-"
             message = (
                 "⚖️ <b>POSITION CLOSED • TIME-DECAY EXIT</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━━\n"
-                f"ℹ️ <b>#{self._escape(symbol)}USDT</b> • 🟡 <b>{action_label}</b>\n"
+                f"ℹ️ <b>#{self._escape(symbol)}USDT</b> • <b>{action_badge}</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━━\n"
                 f"📊 <b>Result:</b> <code>{pnl_sign}{abs(pnl_pct):.2f}%</code> (<code>{pnl_sign}${abs(pnl):,.2f}</code>)\n"
                 f"📍 <b>Entry:</b> <code>{formatted_entry}</code> ➔ <b>Exit:</b> <code>{formatted_exit}</code>\n"

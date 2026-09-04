@@ -268,6 +268,80 @@ class Settings(BaseSettings):
     )
 
     # ------------------------------------------------------------------------
+    # TANZANIA PAYMENT ON-RAMP & LIVE EXCHANGE RATE APIS (SNIPPE & BEEM)
+    # ------------------------------------------------------------------------
+
+    PAYMENT_PROVIDER: str = Field(
+        default="snippe",
+        description="Active Tanzania mobile money payment provider ('snippe' or 'beem').",
+    )
+
+    SNIPPE_API_KEY: str = Field(
+        default="",
+        description="Snippe API Bearer Token for Mobile Money collection (M-Pesa/Tigo/Airtel/Halotel).",
+    )
+
+    SNIPPE_API_URL: str = Field(
+        default="https://api.snippe.io/v1",
+        description="Snippe API Base URL.",
+    )
+
+    SNIPPE_WEBHOOK_SECRET: str = Field(
+        default="",
+        description="Snippe Webhook HMAC verification secret.",
+    )
+
+    SNIPPE_LIVE_MODE: bool = Field(
+        default=False,
+        description="Enable real live Snippe payment charges (False uses sandbox simulation).",
+    )
+
+    BEEM_API_KEY: str = Field(
+        default="",
+        description="Beem Africa API Key for Mobile Money collection.",
+    )
+
+    BEEM_SECRET_KEY: str = Field(
+        default="",
+        description="Beem Africa Secret Key.",
+    )
+
+    BEEM_LIVE_MODE: bool = Field(
+        default=False,
+        description="Enable real live Beem payment charges (False uses sandbox simulation).",
+    )
+
+    BEEM_CHECKOUT_URL: str = Field(
+        default="https://checkout.beem.africa/v1/checkout",
+        description="Beem Africa STK push checkout API URL.",
+    )
+
+    BINANCE_P2P_RATE_API_URL: str = Field(
+        default="https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search",
+        description="Binance P2P live order-book API for real-time TZS/USDT market rates.",
+    )
+
+    EXCHANGE_RATE_API_URL: str = Field(
+        default="https://open.er-api.com/v6/latest/USD",
+        description="Open Exchange Rate API for USD/TZS Forex rates.",
+    )
+
+    COINGECKO_RATE_API_URL: str = Field(
+        default="https://api.coingecko.com/api/v3/simple/price?ids=tether&vs_currencies=tzs",
+        description="CoinGecko crypto rate API for USDT/TZS.",
+    )
+
+    DEFAULT_TZS_PER_USDT: float = Field(
+        default=2640.0,
+        description="Fallback TZS per USDT exchange rate if all network APIs are unreachable.",
+    )
+
+    RATE_CACHE_TTL_SECONDS: int = Field(
+        default=60,
+        description="Cache TTL in seconds for live TZS exchange rate engine.",
+    )
+
+    # ------------------------------------------------------------------------
     # EXCHANGE
     # ------------------------------------------------------------------------
 

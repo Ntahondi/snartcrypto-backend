@@ -375,6 +375,27 @@ class DataStorage:
             )
         ''')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_risk_settings_consent ON user_risk_settings(risk_consent_accepted)')
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # USER SAVED EXCHANGE DEPOSIT ADDRESSES TABLE
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_deposit_addresses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                exchange TEXT NOT NULL,
+                network TEXT NOT NULL,
+                deposit_address TEXT NOT NULL,
+                tag_or_memo TEXT,
+                is_default INTEGER DEFAULT 1,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(user_id),
+                UNIQUE(user_id, exchange, network)
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_deposit_lookup ON user_deposit_addresses(user_id, exchange)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_deposit_network ON user_deposit_addresses(user_id, exchange, network)')
         
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # SEED MASTER ADMIN USER IF NOT PRESENT
@@ -2102,6 +2123,193 @@ class DataStorage:
         except Exception as e:
             logger.error(f"Error updating exchange key test status: {e}")
             return False
+
+    def get_user_active_exchange_credentials(
+        self, user_id: str, exchange: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Fetch decrypted API credentials for the user's active exchange connection.
+        Supports both database user keys and system master keys for admin.
+        """
+        try:
+            clean_exchange = str(exchange or "").strip().lower()
+            if not self.use_db:
+                return None
+
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT * FROM user_exchange_keys
+                WHERE user_id = ? AND LOWER(exchange) = ? AND is_active = 1
+                ORDER BY updated_at DESC LIMIT 1
+                ''',
+                (user_id, clean_exchange)
+            )
+            row = cursor.fetchone()
+            conn.close()
+
+            if row:
+                data = dict(row)
+                data["api_key_decrypted"] = decrypt_exchange_secret(data.get("api_key_encrypted", ""))
+                data["api_secret_decrypted"] = decrypt_exchange_secret(data.get("api_secret_encrypted", ""))
+                if data.get("passphrase_encrypted"):
+                    data["passphrase_decrypted"] = decrypt_exchange_secret(data["passphrase_encrypted"])
+                return data
+
+            # Check environment fallback if user is admin or master configured
+            if clean_exchange == "binance":
+                k = os.getenv("BINANCE_API_KEY", "")
+                s = os.getenv("BINANCE_API_SECRET", "")
+                if k and s:
+                    return {
+                        "user_id": user_id,
+                        "exchange": "binance",
+                        "api_key_decrypted": k,
+                        "api_secret_decrypted": s,
+                        "is_testnet": os.getenv("USE_TESTNET", "true").lower() == "true",
+                    }
+            elif clean_exchange == "bybit":
+                k = os.getenv("BYBIT_API_KEY", "")
+                s = os.getenv("BYBIT_API_SECRET", "")
+                if k and s:
+                    return {
+                        "user_id": user_id,
+                        "exchange": "bybit",
+                        "api_key_decrypted": k,
+                        "api_secret_decrypted": s,
+                        "is_testnet": os.getenv("USE_TESTNET", "true").lower() == "true",
+                    }
+
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching active exchange credentials: {e}")
+            return None
+
+    def save_user_deposit_address(
+        self,
+        user_id: str,
+        exchange: str,
+        network: str,
+        deposit_address: str,
+        tag_or_memo: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Save or update a user's exchange USDT deposit address.
+        """
+        try:
+            if not self.use_db:
+                return {}
+            clean_exchange = str(exchange or "bybit").strip().lower()
+            clean_network = str(network or "BSC").strip().upper()
+            clean_addr = str(deposit_address or "").strip()
+
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO user_deposit_addresses (
+                    user_id, exchange, network, deposit_address, tag_or_memo, is_default, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id, exchange, network) DO UPDATE SET
+                    deposit_address = excluded.deposit_address,
+                    tag_or_memo = excluded.tag_or_memo,
+                    updated_at = CURRENT_TIMESTAMP
+                ''',
+                (user_id, clean_exchange, clean_network, clean_addr, tag_or_memo)
+            )
+            conn.commit()
+            conn.close()
+
+            logger.info(f"💾 Saved deposit address for user {user_id} on {clean_exchange} ({clean_network})")
+            return {
+                "user_id": user_id,
+                "exchange": clean_exchange,
+                "network": clean_network,
+                "deposit_address": clean_addr,
+                "tag_or_memo": tag_or_memo,
+            }
+        except Exception as e:
+            logger.error(f"Error saving user deposit address: {e}")
+            raise
+
+    def get_user_deposit_addresses(
+        self, user_id: str, exchange: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        List saved deposit addresses for a user.
+        """
+        try:
+            if not self.use_db:
+                return []
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            if exchange:
+                cursor.execute(
+                    '''
+                    SELECT * FROM user_deposit_addresses
+                    WHERE user_id = ? AND LOWER(exchange) = ?
+                    ORDER BY updated_at DESC
+                    ''',
+                    (user_id, exchange.strip().lower())
+                )
+            else:
+                cursor.execute(
+                    '''
+                    SELECT * FROM user_deposit_addresses
+                    WHERE user_id = ?
+                    ORDER BY exchange ASC, updated_at DESC
+                    ''',
+                    (user_id,)
+                )
+            rows = cursor.fetchall()
+            conn.close()
+            return [dict(r) for r in rows]
+        except Exception as e:
+            logger.error(f"Error fetching user deposit addresses: {e}")
+            return []
+
+    def get_user_deposit_address_for_exchange(
+        self, user_id: str, exchange: str, network: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get the specific or latest saved deposit address for an exchange/network.
+        """
+        try:
+            if not self.use_db:
+                return None
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            clean_exchange = str(exchange or "").strip().lower()
+
+            if network:
+                cursor.execute(
+                    '''
+                    SELECT * FROM user_deposit_addresses
+                    WHERE user_id = ? AND LOWER(exchange) = ? AND UPPER(network) = ?
+                    LIMIT 1
+                    ''',
+                    (user_id, clean_exchange, network.strip().upper())
+                )
+            else:
+                cursor.execute(
+                    '''
+                    SELECT * FROM user_deposit_addresses
+                    WHERE user_id = ? AND LOWER(exchange) = ?
+                    ORDER BY updated_at DESC LIMIT 1
+                    ''',
+                    (user_id, clean_exchange)
+                )
+            row = cursor.fetchone()
+            conn.close()
+            return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"Error fetching specific deposit address: {e}")
+            return None
 
     def get_user_risk_settings(self, user_id: str) -> Dict:
         """Get or initialize user risk settings and consent status"""

@@ -159,9 +159,8 @@ class PortfolioManager:
 
     VERSION = "3.1.0"
 
-    # Safety ceiling independent of profile configuration.
-    # Set to 10 to support active multi-symbol quantitative portfolios.
-    MAX_POSITIONS_HARD_CAP = 10
+    # Safety ceiling matching the 9 monitored crypto symbols.
+    MAX_POSITIONS_HARD_CAP = 9
 
     DEFAULT_MIN_ALLOCATION_PCT = 0.01
 
@@ -1525,7 +1524,7 @@ class PortfolioManager:
             )
 
         # -----------------------------------------------------
-        # Gate 12: Existing position
+        # Gate 12: Existing position & Explicit Reversal
         # -----------------------------------------------------
 
         active = self._active_positions()
@@ -1535,12 +1534,18 @@ class PortfolioManager:
         )
 
         if existing:
-
-            return False, (
-                f"Position already open "
-                f"for {symbol}. "
-                "Explicit reversal workflow "
-                "is required."
+            existing_action = str(getattr(existing, "action", "")).upper()
+            is_opposite = (
+                (action in {"BUY", "LONG"} and existing_action in {"SELL", "SHORT"})
+                or (action in {"SELL", "SHORT"} and existing_action in {"BUY", "LONG"})
+            )
+            if not is_opposite:
+                return False, (
+                    f"Position already open for {symbol} in same direction ({existing_action}). "
+                    "Duplicate entry rejected."
+                )
+            logger.info(
+                f"🔄 Explicit Reversal Approved for {symbol}: Incoming {action} will close existing {existing_action}"
             )
 
         # -----------------------------------------------------
@@ -2170,13 +2175,25 @@ class PortfolioManager:
                 existing is not None
                 and existing.status == "OPEN"
             ):
-
-                logger.warning(
-                    f"🛡️ Duplicate position "
-                    f"blocked for {symbol}"
+                existing_action = str(getattr(existing, "action", "")).upper()
+                is_opposite = (
+                    (action in {"BUY", "LONG"} and existing_action in {"SELL", "SHORT"})
+                    or (action in {"SELL", "SHORT"} and existing_action in {"BUY", "LONG"})
                 )
-
-                return None
+                if is_opposite:
+                    logger.info(
+                        f"🔄 Executing clean reversal for {symbol}: Closing existing {existing_action} to open {action}"
+                    )
+                    self.close_position(
+                        symbol,
+                        float(pos_info.get("entry_price", existing.current_price)),
+                        "REVERSED_BY_OPPOSITE_SIGNAL",
+                    )
+                else:
+                    logger.warning(
+                        f"🛡️ Duplicate position blocked for {symbol}"
+                    )
+                    return None
 
             if allocation > self.available_capital:
 
@@ -2601,7 +2618,7 @@ class PortfolioManager:
                     if (is_long and breakeven_sl > position.stop_loss) or (not is_long and breakeven_sl < position.stop_loss):
                         position.stop_loss = breakeven_sl
                         logger.info(
-                            f"🛡️ [AI Profit Shield - TIER 1] {symbol} ({prof_name}) SL raised to Breakeven {breakeven_sl:.4f} (100% Risk-Free)"
+                            f"🛡️ [AI Profit Shield - TIER 1] {symbol} ({prof_name}) SL raised to Profit-Lock {breakeven_sl:.4f} (+{t1_buffer:.1f}% Profit Guaranteed)"
                         )
 
             # -------------------------------------------------

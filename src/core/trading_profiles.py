@@ -236,7 +236,7 @@ class TradingProfile:
 
     enable_profit_shield: bool = True
     tier1_breakeven_trigger_pct: float = 2.0
-    tier1_fee_buffer_pct: float = 0.2
+    tier1_fee_buffer_pct: float = 0.8
     tier2_lock_trigger_pct: float = 3.5
     tier2_profit_lock_pct: float = 1.8
     tier3_trail_trigger_pct: float = 6.0
@@ -932,7 +932,7 @@ def get_profile_scalper() -> TradingProfile:
         signal_timeframe=SignalTimeframe.H1,
 
         max_positions_per_symbol=1,
-        max_total_positions=10,
+        max_total_positions=9,
 
         position_size_pct=0.05,
         max_holding_hours=2,
@@ -984,8 +984,8 @@ def get_profile_scalper() -> TradingProfile:
 
         # AI Profit Shield
         enable_profit_shield=True,
-        tier1_breakeven_trigger_pct=1.0,
-        tier1_fee_buffer_pct=0.1,
+        tier1_breakeven_trigger_pct=1.2,
+        tier1_fee_buffer_pct=0.5,
         tier2_lock_trigger_pct=2.0,
         tier2_profit_lock_pct=1.0,
         tier3_trail_trigger_pct=3.0,
@@ -1013,7 +1013,7 @@ def get_profile_day_trader() -> TradingProfile:
         signal_timeframe=SignalTimeframe.H1,
 
         max_positions_per_symbol=1,
-        max_total_positions=10,
+        max_total_positions=9,
 
         position_size_pct=0.10,
         max_holding_hours=8,
@@ -1066,7 +1066,7 @@ def get_profile_day_trader() -> TradingProfile:
         # AI Profit Shield
         enable_profit_shield=True,
         tier1_breakeven_trigger_pct=2.0,
-        tier1_fee_buffer_pct=0.2,
+        tier1_fee_buffer_pct=0.8,
         tier2_lock_trigger_pct=3.5,
         tier2_profit_lock_pct=1.8,
         tier3_trail_trigger_pct=6.0,
@@ -1147,7 +1147,7 @@ def get_profile_swing() -> TradingProfile:
         # AI Profit Shield
         enable_profit_shield=True,
         tier1_breakeven_trigger_pct=3.5,
-        tier1_fee_buffer_pct=0.3,
+        tier1_fee_buffer_pct=1.5,
         tier2_lock_trigger_pct=7.0,
         tier2_profit_lock_pct=3.5,
         tier3_trail_trigger_pct=12.0,
@@ -1228,7 +1228,7 @@ def get_profile_position() -> TradingProfile:
         # AI Profit Shield
         enable_profit_shield=True,
         tier1_breakeven_trigger_pct=5.0,
-        tier1_fee_buffer_pct=0.5,
+        tier1_fee_buffer_pct=2.5,
         tier2_lock_trigger_pct=12.0,
         tier2_profit_lock_pct=6.0,
         tier3_trail_trigger_pct=20.0,

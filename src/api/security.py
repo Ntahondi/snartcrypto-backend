@@ -129,11 +129,14 @@ async def verify_snailguard_request_shield(request: Request):
         except Exception:
             body_data = {}
 
-        # Sanitize sensitive authentication fields to prevent regex false-positives
+        # Sanitize sensitive password/token fields to prevent password false-positives
+        SENSITIVE_AUTH_FIELDS = {
+            "password", "password_hash", "token", "access_token", "refresh_token", "private_key"
+        }
         sanitized_body = dict(body_data) if isinstance(body_data, dict) else body_data
         if isinstance(sanitized_body, dict):
             sanitized_body = {
-                k: ("[REDACTED]" if k in ("password", "secret", "api_secret", "token", "private_key", "password_hash") else v)
+                k: ("[REDACTED]" if str(k).lower() in SENSITIVE_AUTH_FIELDS else v)
                 for k, v in sanitized_body.items()
             }
 

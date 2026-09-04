@@ -481,61 +481,110 @@ class Model4StrategyEngine:
     def _infer_strategy_direction(
         self, strategy: str, row: pd.DataFrame, proba: float, is_active: bool
     ) -> str:
-        """Infer directional bias (BUY, SELL, NEUTRAL) for each strategy."""
+        """
+        Infer directional bias (BUY, SELL, HOLD) for each of the 9 active strategies.
+        Combines pattern classification probabilities with structural market geometry.
+        """
         if not is_active:
             return "HOLD"
 
         try:
             if strategy == "rsi_2":
-                # RSI 2 oversold = BUY bounce; overbought = SELL
+                # Connors RSI 2: oversold bounce -> BUY; overbought exhaustion -> SELL
                 rsi2 = float(row["rsi_2"].values[0]) if "rsi_2" in row else 50.0
                 return "BUY" if rsi2 < 30.0 else ("SELL" if rsi2 > 70.0 else "HOLD")
 
             elif strategy == "momentum_reversal":
-                # Reversal from negative momentum = BUY; reversal from positive = SELL
+                # Mean-reversion: pullback turnaround -> BUY; rally exhaustion -> SELL
                 ret3 = float(row["return_3"].values[0]) if "return_3" in row else 0.0
-                return "BUY" if ret3 < 0 else "SELL"
+                m6 = float(row["momentum_6"].values[0]) if "momentum_6" in row else 0.0
+                return "BUY" if (ret3 < 0 or m6 < 0) else "SELL"
 
             elif strategy == "ma_crossover":
+                # EMA 12/26 cross and spread momentum
                 bull = float(row["ema_bull_cross"].values[0]) if "ema_bull_cross" in row else 0.0
                 diff = float(row["ema12_minus_ema26"].values[0]) if "ema12_minus_ema26" in row else 0.0
                 return "BUY" if (bull > 0 or diff > 0) else "SELL"
 
             elif strategy == "heikin_ashi":
+                # Trend persistence and wick balance
                 ha_dir = float(row["ha_direction"].values[0]) if "ha_direction" in row else 0.0
                 return "BUY" if ha_dir > 0 else "SELL"
 
             elif strategy == "candlestick":
+                # Pinbars, Hammer, Shooting star, and directional expansion
                 hammer = float(row["hammer"].values[0]) if "hammer" in row else 0.0
                 star = float(row["shooting_star"].values[0]) if "shooting_star" in row else 0.0
                 c_dir = float(row["candle_direction"].values[0]) if "candle_direction" in row else 0.0
-                if hammer > 0 or c_dir > 0:
+                u_wick = float(row["upper_wick_pct"].values[0]) if "upper_wick_pct" in row else 0.0
+                l_wick = float(row["lower_wick_pct"].values[0]) if "lower_wick_pct" in row else 0.0
+
+                if hammer > 0 or (l_wick > 0.40 and c_dir >= 0):
                     return "BUY"
-                elif star > 0 or c_dir < 0:
+                elif star > 0 or (u_wick > 0.40 and c_dir <= 0):
+                    return "SELL"
+                elif c_dir > 0:
+                    return "BUY"
+                elif c_dir < 0:
                     return "SELL"
                 return "HOLD"
 
             elif strategy == "role_reversal":
+                # Support/Resistance polarity flips and rejections
                 res_rr = float(row["resistance_role_reversal"].values[0]) if "resistance_role_reversal" in row else 0.0
                 sup_rr = float(row["support_role_reversal"].values[0]) if "support_role_reversal" in row else 0.0
-                if res_rr > 0:
+                res_rej = float(row["resistance_rejection"].values[0]) if "resistance_rejection" in row else 0.0
+                sup_rej = float(row["support_rejection"].values[0]) if "support_rejection" in row else 0.0
+
+                if res_rr > 0 or sup_rej > 0:
                     return "BUY"
-                elif sup_rr > 0:
+                elif sup_rr > 0 or res_rej > 0:
                     return "SELL"
                 return "HOLD"
 
             elif strategy == "bollinger_squeeze":
+                # Contraction release: breakout band direction and band position
+                break_up = float(row["bb_breakout_up"].values[0]) if "bb_breakout_up" in row else 0.0
+                break_down = float(row["bb_breakout_down"].values[0]) if "bb_breakout_down" in row else 0.0
                 pos = float(row["bb_position"].values[0]) if "bb_position" in row else 0.5
-                return "BUY" if pos > 0.5 else "SELL"
+
+                if break_up > 0:
+                    return "BUY"
+                elif break_down > 0:
+                    return "SELL"
+                elif pos >= 0.55:
+                    return "BUY"
+                elif pos <= 0.45:
+                    return "SELL"
+                return "HOLD"
 
             elif strategy == "narrow_range":
+                # Volatility compression (NR4/NR7/NR14) directional resolution
                 c_dir = float(row["candle_direction"].values[0]) if "candle_direction" in row else 0.0
-                return "BUY" if c_dir > 0 else ("SELL" if c_dir < 0 else "HOLD")
+                pos = float(row["bb_position"].values[0]) if "bb_position" in row else 0.5
+                if c_dir > 0 or pos > 0.55:
+                    return "BUY"
+                elif c_dir < 0 or pos < 0.45:
+                    return "SELL"
+                return "HOLD"
 
             elif strategy == "swing_trading":
+                # Market structure: Higher-Highs/Lows vs Lower-Highs/Lows
                 hh = float(row["higher_high"].values[0]) if "higher_high" in row else 0.0
                 hl = float(row["higher_low"].values[0]) if "higher_low" in row else 0.0
-                return "BUY" if (hh > 0 or hl > 0) else "SELL"
+                lh = float(row["lower_high"].values[0]) if "lower_high" in row else 0.0
+                ll = float(row["lower_low"].values[0]) if "lower_low" in row else 0.0
+
+                bull_swing = (hh > 0 and hl > 0) or (hh > 0 or hl > 0)
+                bear_swing = (lh > 0 and ll > 0) or (lh > 0 or ll > 0)
+
+                if bull_swing and not bear_swing:
+                    return "BUY"
+                elif bear_swing and not bull_swing:
+                    return "SELL"
+                else:
+                    c_dir = float(row["candle_direction"].values[0]) if "candle_direction" in row else 0.0
+                    return "BUY" if c_dir > 0 else ("SELL" if c_dir < 0 else "HOLD")
 
         except Exception:
             pass

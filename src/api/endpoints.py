@@ -69,13 +69,15 @@ from src.data.cache import get_cache_service
 from src.data.storage import DataStorage
 from src.core.config import get_settings
 from src.core.trading_profiles import get_profile
+from src.services.tanzania_payment_service import TanzaniaPaymentService
 
 
 # ============================================================================
-# LOGGING
+# LOGGING & SERVICES
 # ============================================================================
 
 logger = logging.getLogger(__name__)
+_tanzania_payment_service = TanzaniaPaymentService()
 
 
 # ============================================================================
@@ -387,6 +389,11 @@ class ConfirmCryptoRequest(BaseModel):
 
 class FiatCheckoutRequest(BaseModel):
     plan_id: str = Field(..., min_length=1)
+
+
+class MomoSubscriptionRequest(BaseModel):
+    plan_id: str = Field(..., min_length=1)
+    phone_number: str = Field(..., min_length=9)
 
 
 # ============================================================================
@@ -890,6 +897,7 @@ async def latest_signals(
     "/signals/generate",
     response_model=APIResponse,
     summary="Generate an AI trading signal",
+    dependencies=[Depends(verify_snailguard_request_shield)],
 )
 async def generate_signal(
     request: SignalRequest,
@@ -1564,32 +1572,23 @@ class _PersistentLivePositionManager:
                 except Exception:
                     pass
 
+                # 📢 Broadcast closed trade directly to Telegram VIP channel
+                try:
+                    tg = getattr(services, "telegram_service", None)
+                    if tg and getattr(tg, "enable_telegram", False):
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            loop.create_task(tg.broadcast_trade_closed(closed_trade))
+                except Exception as tg_err:
+                    logger.warning(f"Telegram trade closed broadcast error: {tg_err}")
+
                 if len(self.closed_trades) > 500:
                     self.closed_trades = self.closed_trades[:500]
 
-                # Open fresh new cycle position starting right now with current market price
-                new_entry = curr_p
-                if is_long:
-                    new_sl = round(new_entry * 0.965, 4 if new_entry < 10 else 2)
-                    new_tp = round(new_entry * 1.055, 4 if new_entry < 10 else 2)
-                else:
-                    new_sl = round(new_entry * 1.035, 4 if new_entry < 10 else 2)
-                    new_tp = round(new_entry * 0.945, 4 if new_entry < 10 else 2)
-
-                pos["id"] = f"pos_{sym.lower()}_{int(now.timestamp())}"
-                pos["entry_price"] = new_entry
-                pos["entry_time"] = now.isoformat()
-                pos["stop_loss"] = new_sl
-                pos["take_profit"] = new_tp
-                pos["close_reason"] = exit_reason
-                pos["peak_pnl_percentage"] = 0.0
-                pos["peak_price"] = new_entry
-                pos["trail_tier"] = 0
-                pos["is_risk_free"] = False
-                pos["extension_active"] = False
-                pos["extension_granted"] = False
-                pos["max_holding_hours"] = 4
-                entry_p = new_entry
+                # Slot becomes VACANT / IDLE. Do NOT auto-reopen mid-hour.
+                # Only a new approved candle signal from SignalGenerator will open a new position.
+                del self.positions[sym]
+                continue
 
             # Shield status label
             tier = pos.get("trail_tier", 0)
@@ -1644,6 +1643,61 @@ class _PersistentLivePositionManager:
         merged = list(all_trades_map.values())
         merged.sort(key=lambda x: str(x.get("exit_time", "")), reverse=True)
         return copy.deepcopy(merged[:limit])
+
+    def open_signal_position(self, signal: Dict[str, Any]) -> bool:
+        """Open a new position only when a genuine approved signal is received on a closed candle."""
+        self.initialize_if_needed()
+        sym = str(signal.get("symbol", "")).upper()
+        if not sym or sym in self.positions:
+            return False
+        if len(self.positions) >= 9:
+            return False
+
+        action = str(signal.get("action", "BUY")).upper()
+        if action not in ("BUY", "SELL", "LONG", "SHORT"):
+            return False
+
+        entry_price = float(signal.get("price", get_live_symbol_price(sym)))
+        now = datetime.now(timezone.utc)
+        is_long = action in ("BUY", "LONG")
+        sl = round(entry_price * 0.965 if is_long else entry_price * 1.035, 4 if entry_price < 10 else 2)
+        tp = round(entry_price * 1.055 if is_long else entry_price * 0.945, 4 if entry_price < 10 else 2)
+
+        self.positions[sym] = {
+            "id": f"pos_{sym.lower()}_{int(now.timestamp())}",
+            "symbol": sym,
+            "action": "BUY" if is_long else "SELL",
+            "entry_price": entry_price,
+            "current_price": entry_price,
+            "quantity": float(signal.get("quantity", 1.0)),
+            "entry_time": now.isoformat(),
+            "stop_loss": sl,
+            "take_profit": tp,
+            "pnl": 0.0,
+            "pnl_percentage": 0.0,
+            "peak_pnl_percentage": 0.0,
+            "peak_price": entry_price,
+            "trail_tier": 0,
+            "is_risk_free": False,
+            "extension_active": False,
+            "extension_granted": False,
+            "shield_status": "ACTIVE",
+            "status": "OPEN",
+            "max_holding_hours": int(signal.get("max_holding_hours", 8)),
+            "session_id": "live_session",
+            "signal_id": signal.get("signal_id", f"sig_{sym}_{int(now.timestamp())}"),
+            "timeframe": signal.get("timeframe", "1h"),
+            "profile_name": signal.get("profile_name", "day_trader"),
+            "ai_confidence": float(signal.get("confidence", 0.85)),
+            "ai_signal_strength": float(signal.get("signal_strength", 0.80)),
+            "expected_return": float(signal.get("expected_return", 4.5)),
+            "expected_time_to_profit": 4.0,
+            "ensemble_agreement": 1.0,
+            "market_regime": signal.get("market_regime", "BULLISH_TREND" if is_long else "BEARISH_TREND"),
+            "execution_status": "ACTIVE",
+        }
+        logger.info(f"🎯 Opened genuine position for {sym} ({action}) from verified 1H candle signal at ${entry_price}")
+        return True
 
     def get_portfolio_metrics(self, prices: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
         """
@@ -1822,6 +1876,7 @@ async def active_orders() -> APIResponse:
     "/trading/order",
     response_model=APIResponse,
     summary="Execute a real trade",
+    dependencies=[Depends(verify_snailguard_request_shield)],
 )
 async def execute_trade(
     request: TradeRequest,
@@ -1879,6 +1934,7 @@ async def execute_trade(
     "/trading/close",
     response_model=APIResponse,
     summary="Close an open position",
+    dependencies=[Depends(verify_snailguard_request_shield)],
 )
 async def close_position(
     request: ClosePositionRequest,
@@ -2063,6 +2119,7 @@ async def telegram_status() -> APIResponse:
     "/notifications/telegram/test",
     response_model=APIResponse,
     summary="Test Telegram Bot connectivity and send a live test message",
+    dependencies=[Depends(verify_snailguard_request_shield)],
 )
 async def telegram_test() -> APIResponse:
     telegram = services.telegram_service
@@ -2761,6 +2818,7 @@ async def get_me(user: AuthenticatedUser = Depends(require_authenticated_user)) 
     "/auth/account",
     response_model=APIResponse,
     summary="Permanently delete user account and all personal data (Apple App Store & GDPR Compliant)",
+    dependencies=[Depends(verify_snailguard_request_shield)],
 )
 async def delete_account(user: AuthenticatedUser = Depends(require_authenticated_user)) -> APIResponse:
     storage = _get_storage()
@@ -2783,6 +2841,7 @@ async def delete_account(user: AuthenticatedUser = Depends(require_authenticated
     "/billing/cancel-subscription",
     response_model=APIResponse,
     summary="Cancel active subscription",
+    dependencies=[Depends(verify_snailguard_request_shield)],
 )
 async def cancel_subscription(user: AuthenticatedUser = Depends(require_authenticated_user)) -> APIResponse:
     storage = _get_storage()
@@ -3072,6 +3131,69 @@ async def fiat_checkout(
     )
 
 
+@router.post(
+    "/billing/momo-checkout",
+    response_model=APIResponse,
+    summary="Initiate Mobile Money STK Push for Pro ($20), VIP ($49), or VVIP ($99) Subscription",
+    dependencies=[Depends(verify_snailguard_request_shield)],
+)
+async def billing_momo_checkout(
+    request: MomoSubscriptionRequest,
+    user: AuthenticatedUser = Depends(require_authenticated_user),
+) -> APIResponse:
+    res = await _tanzania_payment_service.initiate_subscription_momo(
+        user_id=user.user_id,
+        plan_id=request.plan_id,
+        phone_number=request.phone_number,
+    )
+    if not res.get("success"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=res.get("error", "Failed to initiate Mobile Money subscription checkout"),
+        )
+    return APIResponse(
+        timestamp=utc_now(),
+        data=res,
+    )
+
+
+@router.get(
+    "/billing/momo-status/{order_id}",
+    response_model=APIResponse,
+    summary="Check status of a Mobile Money subscription order and retrieve updated user role",
+)
+async def get_billing_momo_status(
+    order_id: str,
+    user: AuthenticatedUser = Depends(require_authenticated_user),
+) -> APIResponse:
+    storage = _get_storage()
+    order = _tanzania_payment_service.get_order_status(order_id)
+    if not order:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Subscription order not found",
+        )
+
+    # Invalidate cached user if completed
+    if order.get("status") == "COMPLETED":
+        cache = get_cache_service()
+        await cache.delete_pattern("jwt_user:")
+
+    active_sub = storage.get_active_subscription(user.user_id)
+    return APIResponse(
+        timestamp=utc_now(),
+        data={
+            "order_id": order_id,
+            "status": order.get("status", "PENDING"),
+            "plan_id": order.get("plan_id"),
+            "plan_name": order.get("plan_name"),
+            "amount_tzs": order.get("amount_tzs"),
+            "amount_usd": order.get("amount_usd"),
+            "subscription": active_sub,
+        },
+    )
+
+
 # ============================================================================
 # CELEBRATION WINS SHOWCASE (SOCIAL PROOF & CONVERSION FEED)
 # ============================================================================
@@ -3332,6 +3454,7 @@ async def list_exchange_keys(
     "/exchange/test-connection",
     response_model=APIResponse,
     summary="Test live connection to Binance or Bybit without saving keys",
+    dependencies=[Depends(verify_snailguard_request_shield)],
 )
 async def test_exchange_connection(
     req: TestExchangeConnectionRequest,
@@ -3366,6 +3489,7 @@ async def test_exchange_connection(
     "/exchange/keys",
     response_model=APIResponse,
     summary="Save and encrypt exchange API credentials for automated live trade execution",
+    dependencies=[Depends(verify_snailguard_request_shield)],
 )
 async def save_exchange_key(
     req: SaveExchangeKeyRequest,
@@ -3399,6 +3523,7 @@ async def save_exchange_key(
     "/exchange/keys/{key_id}",
     response_model=APIResponse,
     summary="Securely remove an exchange API connection",
+    dependencies=[Depends(verify_snailguard_request_shield)],
 )
 async def delete_exchange_key(
     key_id: int,
@@ -3427,6 +3552,7 @@ async def delete_exchange_key(
     "/exchange/toggle-auto-trade",
     response_model=APIResponse,
     summary="Enable or disable automated real-time trade execution for an exchange connection",
+    dependencies=[Depends(verify_snailguard_request_shield)],
 )
 async def toggle_auto_trade(
     req: ToggleAutoTradeRequest,
@@ -3642,6 +3768,7 @@ async def get_user_exchange_portfolio(
     "/exchange/consent",
     response_model=APIResponse,
     summary="Record explicit legal risk consent and AI model autonomy acceptance for VVIP real trade execution",
+    dependencies=[Depends(verify_snailguard_request_shield)],
 )
 async def record_risk_consent(
     req: RiskConsentRequest,
@@ -3691,6 +3818,7 @@ async def get_user_risk_config(
     "/exchange/risk-config",
     response_model=APIResponse,
     summary="Update user's personalized risk limits, leverage, and AI execution strategy",
+    dependencies=[Depends(verify_snailguard_request_shield)],
 )
 async def update_user_risk_config(
     req: RiskConfigRequest,
@@ -3707,6 +3835,192 @@ async def update_user_risk_config(
         timestamp=utc_now(),
         data=updated,
     )
+
+
+# ============================================================================
+# TANZANIA MOBILE MONEY & P2P ON-RAMP ENDPOINTS
+# ============================================================================
+
+class InitiateDepositRequest(BaseModel):
+    phone_number: str = Field(..., description="Tanzanian mobile money phone number (e.g. 0754123456)")
+    amount_tzs: float = Field(..., description="Amount in Tanzanian Shillings")
+    exchange: str = Field(default="bybit", description="Target exchange: binance or bybit")
+    deposit_address: str = Field(..., description="USDT wallet address on Binance or Bybit")
+    network: str = Field(default="BSC", description="USDT transfer network (BSC, TRC20, ARBITRUM)")
+    user_id: Optional[str] = Field(default=None, description="Optional user identifier")
+
+
+class InitiateSubscriptionRequest(BaseModel):
+    plan_id: str = Field(..., description="Subscription plan ID: pro_20, vip_49, vvip_99")
+    phone_number: str = Field(..., description="Tanzanian mobile money phone number (e.g. 0754123456)")
+    user_id: Optional[str] = Field(default=None, description="Optional user identifier")
+
+
+class SaveDepositAddressRequest(BaseModel):
+    exchange: str = Field(default="bybit", description="Target exchange: binance or bybit")
+    network: str = Field(default="BSC", description="USDT transfer network (BSC, TRC20, ARBITRUM)")
+    deposit_address: str = Field(..., description="USDT wallet address on Binance or Bybit")
+    tag_or_memo: Optional[str] = Field(default=None, description="Optional memo or tag")
+
+
+@router.get(
+    "/payments/rate",
+    summary="Get live TZS <-> USDT conversion rate",
+    tags=["Payments & On-Ramp"],
+)
+async def get_tanzania_payment_rate():
+    """Returns the dynamic multi-source live market exchange rate for TZS to USDT with deposit limits."""
+    return await _tanzania_payment_service.get_live_rate()
+
+
+@router.get(
+    "/payments/deposit-address",
+    summary="Get auto-detected or saved exchange USDT deposit address",
+    tags=["Payments & On-Ramp"],
+)
+async def get_tanzania_deposit_address(
+    exchange: str = Query("bybit", description="Target exchange: bybit or binance"),
+    network: str = Query("BSC", description="Network: BSC, TRC20, ARBITRUM"),
+    current_user: Optional[AuthenticatedUser] = Depends(get_current_user_optional),
+):
+    """
+    Fetch the user's USDT deposit address with two-tier resolution:
+    1. Automated: If user has linked Bybit/Binance API keys, query exchange directly via CCXT.
+    2. Saved Profile: Fall back to previously saved address in database.
+    """
+    user_id = current_user.user_id if current_user else "anonymous"
+    return await _tanzania_payment_service.get_user_exchange_deposit_address(
+        user_id=user_id,
+        exchange=exchange,
+        network=network,
+    )
+
+
+@router.post(
+    "/payments/save-deposit-address",
+    summary="Save preferred exchange USDT deposit address for current user",
+    tags=["Payments & On-Ramp"],
+    dependencies=[Depends(verify_snailguard_request_shield)],
+)
+async def save_tanzania_deposit_address(
+    req: SaveDepositAddressRequest,
+    current_user: Optional[AuthenticatedUser] = Depends(get_current_user_optional),
+):
+    """Save or update the user's preferred USDT deposit address for 1-tap reuse."""
+    user_id = current_user.user_id if current_user else "anonymous"
+    try:
+        saved = _tanzania_payment_service.save_user_deposit_address(
+            user_id=user_id,
+            exchange=req.exchange,
+            network=req.network,
+            deposit_address=req.deposit_address,
+            tag_or_memo=req.tag_or_memo,
+        )
+        return {
+            "success": True,
+            "data": saved,
+            "message": f"Successfully saved default {req.exchange.upper()} ({req.network}) deposit address",
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+
+@router.post(
+    "/payments/deposit/initiate",
+    summary="Trigger Mobile Money STK Push (M-Pesa, Tigo Pesa, Airtel)",
+    tags=["Payments & On-Ramp"],
+    dependencies=[Depends(verify_snailguard_request_shield)],
+)
+async def initiate_tanzania_deposit(
+    req: InitiateDepositRequest,
+    current_user: Optional[AuthenticatedUser] = Depends(get_current_user_optional),
+):
+    """
+    Triggers an instant USSD STK Push prompt to user's phone in Tanzania.
+    Upon PIN confirmation, USDT is dispatched directly to their Binance or Bybit wallet.
+    """
+    user_id = req.user_id or (current_user.user_id if current_user else "anonymous")
+    result = await _tanzania_payment_service.initiate_deposit_stk(
+        phone_number=req.phone_number,
+        amount_tzs=req.amount_tzs,
+        exchange=req.exchange,
+        deposit_address=req.deposit_address,
+        network=req.network,
+        user_id=user_id,
+    )
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=result.get("error", "Failed to initiate mobile money deposit"),
+        )
+    return result
+
+
+@router.post(
+    "/payments/subscription/initiate",
+    summary="Trigger Mobile Money STK Push for Subscription (Pro, VIP, VVIP)",
+    tags=["Payments & On-Ramp"],
+    dependencies=[Depends(verify_snailguard_request_shield)],
+)
+async def initiate_tanzania_subscription(
+    req: InitiateSubscriptionRequest,
+    current_user: Optional[AuthenticatedUser] = Depends(get_current_user_optional),
+):
+    """
+    Triggers an instant USSD STK Push prompt for plan subscriptions (pro_20, vip_49, vvip_99)
+    using Snippe or Beem Africa. Upon PIN confirmation, the user's role is activated.
+    """
+    user_id = req.user_id or (current_user.user_id if current_user else "anonymous")
+    result = await _tanzania_payment_service.initiate_subscription_momo(
+        user_id=user_id,
+        plan_id=req.plan_id,
+        phone_number=req.phone_number,
+    )
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=result.get("error", "Failed to initiate mobile money subscription"),
+        )
+    return result
+
+
+@router.get(
+    "/payments/deposit/status/{order_id}",
+    summary="Check status of a Mobile Money deposit order",
+    tags=["Payments & On-Ramp"],
+)
+async def get_tanzania_deposit_status(order_id: str):
+    """Poll live status of an on-ramp deposit order for checkout timers."""
+    status_data = _tanzania_payment_service.get_order_status(order_id)
+    if not status_data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Deposit order not found",
+        )
+    return status_data
+
+
+@router.post(
+    "/payments/webhook",
+    summary="Tanzania Mobile Money Payment Confirmation Webhook (Snippe & Beem)",
+    tags=["Payments & On-Ramp"],
+)
+async def tanzania_payment_webhook(payload: Dict[str, Any]):
+    """Receives automated callback from Snippe or Beem Africa when mobile payment clears."""
+    return _tanzania_payment_service.process_webhook(payload)
+
+
+@router.get(
+    "/payments/p2p-guides",
+    summary="Get pre-filtered P2P deep links and guides for Binance & Bybit",
+    tags=["Payments & On-Ramp"],
+)
+async def get_tanzania_p2p_guides():
+    """Returns 1-click deep links into Binance and Bybit P2P with Swahili safety guides."""
+    return _tanzania_payment_service.get_p2p_guides()
 
 
 # ============================================================================

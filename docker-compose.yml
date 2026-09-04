@@ -25,6 +25,8 @@ services:
       # Persistent storage mounts (survives container rebuilds)
       - ./positions:/app/positions
       - ./signal_history:/app/signal_history
+      - ./data:/app/data
+      - ./storage:/app/storage
       - ./logs:/app/logs
       - ./config.yaml:/app/config.yaml
     healthcheck:

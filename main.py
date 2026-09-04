@@ -14,7 +14,7 @@ if sys.platform == "win32":
     
 import os
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 import asyncio
@@ -23,6 +23,8 @@ from contextlib import asynccontextmanager
 from typing import Dict, Optional, List
 import pandas as pd
 import numpy as np
+
+from src.api.security import verify_snailguard_request_shield
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 🔥 FIX: Suppress TensorFlow Warnings
@@ -413,7 +415,10 @@ async def portfolio_positions():
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # BACKTEST ENDPOINT
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-@app.post("/api/v1/backtest/run")
+@app.post(
+    "/api/v1/backtest/run",
+    dependencies=[Depends(verify_snailguard_request_shield)],
+)
 async def run_backtest(symbol: str, days: int = 30):
     """Run backtest for a specific symbol"""
     global market_analyzer_instance
@@ -442,7 +447,10 @@ async def training_status_endpoint():
     return market_analyzer_instance.model_trainer.get_training_status()
 
 
-@app.post("/api/v1/retrain")
+@app.post(
+    "/api/v1/retrain",
+    dependencies=[Depends(verify_snailguard_request_shield)],
+)
 async def trigger_training(force: bool = False):
     """Manually trigger model training"""
     global market_analyzer_instance
