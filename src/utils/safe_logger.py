@@ -114,19 +114,37 @@ class SafeFormatter(logging.Formatter):
 class SafeRotatingFileHandler(RotatingFileHandler):
     """
     Windows-safe RotatingFileHandler that gracefully handles PermissionError 
-    during file rotation without raising errors or polluting stderr.
+    during file writing, flushing, and rotation without raising errors or polluting stderr.
     """
+    def emit(self, record):
+        try:
+            super().emit(record)
+        except (PermissionError, OSError, IOError):
+            pass
+
+    def flush(self):
+        try:
+            super().flush()
+        except (PermissionError, OSError, IOError):
+            pass
+
     def shouldRollover(self, record):
         try:
             return super().shouldRollover(record)
-        except (PermissionError, OSError):
+        except (PermissionError, OSError, IOError):
             return False
 
     def doRollover(self):
         try:
             super().doRollover()
-        except (PermissionError, OSError):
+        except (PermissionError, OSError, IOError):
             pass
+
+    def handleError(self, record):
+        exc_type, _, _ = sys.exc_info()
+        if exc_type is not None and issubclass(exc_type, (PermissionError, OSError, IOError)):
+            return
+        super().handleError(record)
 
 
 class SafeLogger:
