@@ -3308,6 +3308,7 @@ class RiskConfigRequest(BaseModel):
 )
 async def exchange_server_info() -> APIResponse:
     """Provides server IP restrictions and required exchange permissions."""
+    settings = get_settings()
     server_ip = getattr(settings, "SERVER_IP", "138.197.181.202") or "138.197.181.202"
     return APIResponse(
         timestamp=utc_now(),

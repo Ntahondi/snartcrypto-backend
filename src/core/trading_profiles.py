@@ -937,7 +937,7 @@ def get_profile_scalper() -> TradingProfile:
         position_size_pct=0.05,
         max_holding_hours=2,
 
-        min_confidence=0.65,
+        min_confidence=0.55,
         min_signal_strength=0.60,
 
         require_timeframe_alignment=True,
