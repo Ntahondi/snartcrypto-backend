@@ -37,9 +37,10 @@ logger = SafeLogger.get_logger(__name__)
 class ModelTrainer:
     def __init__(self, settings=None):
         self.settings = settings or get_settings()
-        self.exchange = ccxt.binance({
+        exchange_cls = getattr(ccxt, 'binanceusdm', ccxt.binance)
+        self.exchange = exchange_cls({
             'enableRateLimit': True,
-            'options': {'defaultType': 'future'}
+            'options': {'defaultType': 'future', 'adjustForTimeDifference': True}
         })
         self.is_training = False
         self.last_training_time = None
