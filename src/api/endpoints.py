@@ -1785,6 +1785,84 @@ async def position(
         )
 
 
+class ProfileSwitchRequest(BaseModel):
+    profile: str = Field(..., description="Target trading profile: 'day_trader', 'scalper', 'swing', 'position', or 'test'")
+
+
+@router.get(
+    "/trading/profile",
+    response_model=APIResponse,
+    summary="Get active trading profile",
+)
+async def get_trading_profile() -> APIResponse:
+    """Return currently active trading profile parameters."""
+    analyzer = services.market_analyzer
+    if analyzer and hasattr(analyzer, "get_trading_profile"):
+        data = analyzer.get_trading_profile()
+    elif services.portfolio_manager:
+        prof = getattr(services.portfolio_manager, "profile", None)
+        prof_name = getattr(services.portfolio_manager, "profile_name", "day_trader")
+        data = {
+            "profile": prof_name,
+            "trading_style": getattr(prof, "trading_style", prof_name),
+            "risk_tolerance": getattr(prof, "risk_tolerance", "moderate"),
+            "min_confidence": getattr(prof, "min_confidence", 0.55),
+            "min_signal_strength": getattr(prof, "min_signal_strength", 0.35),
+            "max_holding_hours": getattr(prof, "max_holding_hours", 8),
+            "position_size_pct": getattr(prof, "position_size_pct", 0.10),
+        }
+    else:
+        cfg = get_settings()
+        data = {"profile": getattr(cfg, "TRADING_PROFILE", "day_trader")}
+
+    return APIResponse(
+        timestamp=utc_now(),
+        data=data,
+    )
+
+
+@router.post(
+    "/trading/profile",
+    response_model=APIResponse,
+    summary="Switch active trading profile dynamically",
+    dependencies=[Depends(verify_snailguard_request_shield)],
+)
+async def set_trading_profile(
+    request: ProfileSwitchRequest,
+) -> APIResponse:
+    """Dynamically switch active trading profile and risk parameters."""
+    target = request.profile.lower().strip()
+    valid_profiles = {"day_trader", "scalper", "swing", "position", "test"}
+    if target not in valid_profiles:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid profile '{target}'. Must be one of: {sorted(list(valid_profiles))}",
+        )
+
+    success = False
+    message = "Portfolio manager not active"
+
+    if services.market_analyzer and hasattr(services.market_analyzer, "set_trading_profile"):
+        success, message = services.market_analyzer.set_trading_profile(target)
+    elif services.portfolio_manager and hasattr(services.portfolio_manager, "set_profile"):
+        success, message = services.portfolio_manager.set_profile(target)
+
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to switch profile: {message}",
+        )
+
+    return APIResponse(
+        timestamp=utc_now(),
+        data={
+            "success": True,
+            "active_profile": target,
+            "message": message,
+        },
+    )
+
+
 # ============================================================================
 # TRADING
 # ============================================================================

@@ -345,6 +345,21 @@ class PortfolioManager:
             f"${self.available_capital:,.2f}"
         )
 
+    def set_profile(self, profile_name: str) -> Tuple[bool, str]:
+        """Dynamically switch trading profile and reconfigure risk gates."""
+        try:
+            from src.core.trading_profiles import get_profile
+            new_profile = get_profile(profile_name)
+            self.profile = new_profile
+            self.profile_name = str(profile_name).lower()
+            style = self._profile_value("trading_style", self.profile_name)
+            risk = self._profile_value("risk_tolerance", "unknown")
+            logger.info(f"🔄 Trading Profile dynamically switched to: {style} (Risk: {risk})")
+            return True, f"Trading profile successfully switched to {self.profile_name}"
+        except Exception as exc:
+            logger.error(f"❌ Failed to switch trading profile to {profile_name}: {exc}")
+            return False, str(exc)
+
     # =========================================================
     # PROFILE HELPERS
     # =========================================================

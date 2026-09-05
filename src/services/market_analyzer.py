@@ -2802,3 +2802,26 @@ class MarketAnalyzer:
             "current_price": analysis["current_price"],
             "timestamp": analysis["timestamp"],
         }
+
+    def set_trading_profile(self, profile_name: str) -> Tuple[bool, str]:
+        """Update active trading profile across MarketAnalyzer and PortfolioManager."""
+        clean_name = str(profile_name).lower().strip()
+        if not self.portfolio_manager:
+            return False, "PortfolioManager not initialized"
+        return self.portfolio_manager.set_profile(clean_name)
+
+    def get_trading_profile(self) -> Dict[str, Any]:
+        """Get active trading profile details."""
+        if not self.portfolio_manager:
+            return {"profile": getattr(self.settings, "TRADING_PROFILE", "day_trader")}
+        prof = getattr(self.portfolio_manager, "profile", None)
+        prof_name = getattr(self.portfolio_manager, "profile_name", "day_trader")
+        return {
+            "profile": prof_name,
+            "trading_style": getattr(prof, "trading_style", prof_name),
+            "risk_tolerance": getattr(prof, "risk_tolerance", "moderate"),
+            "min_confidence": getattr(prof, "min_confidence", 0.55),
+            "min_signal_strength": getattr(prof, "min_signal_strength", 0.35),
+            "max_holding_hours": getattr(prof, "max_holding_hours", 8),
+            "position_size_pct": getattr(prof, "position_size_pct", 0.10),
+        }
