@@ -14,8 +14,12 @@ if sys.platform == "win32":
     
 import os
 import uvicorn
-from fastapi import FastAPI, HTTPException, Depends, WebSocket
+import secrets
+from fastapi import FastAPI, HTTPException, Depends, WebSocket, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
+from fastapi.openapi.utils import get_openapi
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 import logging
 import asyncio
 from datetime import datetime
@@ -169,10 +173,78 @@ app = FastAPI(
     title="SnartCrypto AI Trading API",
     description="AI-Powered Cryptocurrency Trading with Derivatives, Order Book & Stationary Features",
     version="3.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
     lifespan=lifespan
 )
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# SECURE API DOCUMENTATION (HTTP BASIC AUTH)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+docs_security = HTTPBasic()
+
+
+async def verify_docs_auth(credentials: HTTPBasicCredentials = Depends(docs_security)) -> str:
+    """Verify HTTP Basic Auth credentials before serving Swagger UI / ReDoc / OpenAPI."""
+    current_settings = get_settings()
+    
+    # If docs auth is disabled in settings, allow access
+    if not getattr(current_settings, "DOCS_AUTH_ENABLED", True):
+        return credentials.username
+        
+    docs_username = getattr(current_settings, "DOCS_USERNAME", "admin")
+    docs_password = getattr(current_settings, "DOCS_PASSWORD", "")
+    
+    # If no password configured, block access for safety in production
+    if not docs_password:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API documentation access is locked. Configure DOCS_PASSWORD in .env to unlock.",
+        )
+        
+    is_correct_user = secrets.compare_digest(credentials.username.encode("utf-8"), docs_username.encode("utf-8"))
+    is_correct_pass = secrets.compare_digest(credentials.password.encode("utf-8"), docs_password.encode("utf-8"))
+    
+    if not (is_correct_user and is_correct_pass):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized: Incorrect credentials for API Documentation",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
+
+
+settings_for_docs = get_settings()
+if getattr(settings_for_docs, "ENABLE_API_DOCS", True):
+
+    @app.get("/docs", include_in_schema=False)
+    async def get_swagger_ui(username: str = Depends(verify_docs_auth)):
+        """Protected Swagger UI documentation."""
+        return get_swagger_ui_html(
+            openapi_url="/openapi.json",
+            title=f"{app.title} - Swagger UI",
+            swagger_favicon_url="https://snartcrypto.snartpace.com/favicon.png",
+        )
+
+    @app.get("/redoc", include_in_schema=False)
+    async def get_redoc_ui(username: str = Depends(verify_docs_auth)):
+        """Protected ReDoc documentation."""
+        return get_redoc_html(
+            openapi_url="/openapi.json",
+            title=f"{app.title} - ReDoc",
+            redoc_favicon_url="https://snartcrypto.snartpace.com/favicon.png",
+        )
+
+    @app.get("/openapi.json", include_in_schema=False)
+    async def get_openapi_schema(username: str = Depends(verify_docs_auth)):
+        """Protected OpenAPI schema specification."""
+        return get_openapi(
+            title=app.title,
+            version=app.version,
+            description=app.description,
+            routes=app.routes,
+        )
 
 # CORS middleware
 app.add_middleware(

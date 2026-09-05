@@ -209,8 +209,28 @@ class Settings(BaseSettings):
     )
 
     SERVER_IP: str = Field(
-        default="138.197.181.202",
+        default="",
         description="Public server IP address for exchange API key whitelisting.",
+    )
+
+    ENABLE_API_DOCS: bool = Field(
+        default=True,
+        description="Master switch to enable or disable Swagger /docs, /redoc, and /openapi.json.",
+    )
+
+    DOCS_AUTH_ENABLED: bool = Field(
+        default=True,
+        description="Enforce HTTP Basic Authentication for /docs, /redoc, and /openapi.json.",
+    )
+
+    DOCS_USERNAME: str = Field(
+        default="admin",
+        description="HTTP Basic Auth username for accessing API documentation.",
+    )
+
+    DOCS_PASSWORD: str = Field(
+        default="",
+        description="HTTP Basic Auth password for accessing API documentation. Must be set in .env in production.",
     )
 
     API_PREFIX: str = Field(
@@ -442,22 +462,22 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------------
 
     WALLET_TRC20_ADDRESS: str = Field(
-        default="TYDzsYUb4r8ZJ3pA4rXvWzR8G9cK8v1a2b",
+        default="",
         description="Your personal USDT (TRC20) deposit wallet address.",
     )
 
     WALLET_BSC_ADDRESS: str = Field(
-        default="0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
+        default="",
         description="Your personal USDT / USDC / BNB (BSC BEP20) wallet address.",
     )
 
     WALLET_POLYGON_ADDRESS: str = Field(
-        default="0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
+        default="",
         description="Your personal Polygon (MATIC) wallet address.",
     )
 
     WALLET_ERC20_ADDRESS: str = Field(
-        default="0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
+        default="",
         description="Your personal Ethereum (ERC20) wallet address.",
     )
 
@@ -755,7 +775,7 @@ class Settings(BaseSettings):
     )
 
     MODEL4_MIN_ACTIVE_STRATEGIES: int = Field(
-        default=1,
+        default=0,
         ge=0,
     )
 
@@ -1335,6 +1355,16 @@ def validate_settings(
         errors.append(
             f"Unsupported MARGIN_TYPE: {settings.MARGIN_TYPE}"
         )
+
+    # ------------------------------------------------------------------------
+    # SECURITY
+    # ------------------------------------------------------------------------
+
+    if settings.ENVIRONMENT.lower() == "production":
+        if not settings.JWT_SECRET_KEY:
+            errors.append(
+                "JWT_SECRET_KEY is required in production. Set it in your .env file."
+            )
 
     return errors
 
