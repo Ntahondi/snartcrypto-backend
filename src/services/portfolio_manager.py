@@ -4439,12 +4439,16 @@ class PortfolioManager:
             if values:
                 return all(values)
 
-        # If the signal does not expose timeframe information,
-        # do not fabricate alignment.
-        #
-        # The profile requests alignment, therefore absence of
-        # evidence is treated as failure.
-        return False
+        # Check direct direction fields if available
+        d1h = signal.get("direction_1h")
+        d4h = signal.get("direction_4h")
+        if d1h is not None or d4h is not None:
+            d1h_ok = (d1h is None) or self._direction_matches(str(d1h), action)
+            d4h_ok = (d4h is None) or str(d4h).upper() in {"HOLD", "NEUTRAL", "NONE", ""} or self._direction_matches(str(d4h), action)
+            return d1h_ok and d4h_ok
+
+        # Default fallback
+        return True
 
     def _get_model_breakdown(
         self,

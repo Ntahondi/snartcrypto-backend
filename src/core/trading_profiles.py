@@ -175,7 +175,7 @@ class TradingProfile:
     model4_min_strategy_probability: float = 0.50
     model4_strong_strategy_probability: float = 0.75
 
-    model4_min_active_strategies: int = 1
+    model4_min_active_strategies: int = 0
     model4_max_active_strategies: int = 9
 
     model4_require_strong_strategy: bool = False
@@ -893,7 +893,7 @@ def get_profile_test() -> TradingProfile:
         use_model4_strategy_detector=True,
         model4_min_strategy_probability=0.50,
         model4_strong_strategy_probability=0.75,
-        model4_min_active_strategies=1,
+        model4_min_active_strategies=0,
         model4_max_active_strategies=9,
         model4_require_strong_strategy=False,
         model4_use_as_direction_vote=False,
@@ -938,9 +938,9 @@ def get_profile_scalper() -> TradingProfile:
         max_holding_hours=2,
 
         min_confidence=0.55,
-        min_signal_strength=0.60,
+        min_signal_strength=0.35,
 
-        require_timeframe_alignment=True,
+        require_timeframe_alignment=False,
         require_ensemble_agreement=True,
 
         # Regression
@@ -960,7 +960,7 @@ def get_profile_scalper() -> TradingProfile:
         use_model4_strategy_detector=True,
         model4_min_strategy_probability=0.50,
         model4_strong_strategy_probability=0.75,
-        model4_min_active_strategies=1,
+        model4_min_active_strategies=0,
         model4_max_active_strategies=9,
         model4_require_strong_strategy=False,
         model4_use_as_direction_vote=False,
@@ -1018,19 +1018,19 @@ def get_profile_day_trader() -> TradingProfile:
         position_size_pct=0.10,
         max_holding_hours=8,
 
-        min_confidence=0.60,
-        min_signal_strength=0.50,
+        min_confidence=0.55,
+        min_signal_strength=0.35,
 
-        require_timeframe_alignment=True,
+        require_timeframe_alignment=False,
         require_ensemble_agreement=True,
 
         # Regression
         use_regression_model=True,
-        min_expected_return=0.005,
+        min_expected_return=0.003,
 
         # Smart Trader
         use_smart_trader_model=True,
-        require_4h_direction=True,
+        require_4h_direction=False,
         require_1d_confirmation=False,
 
         # Market GPT
@@ -1041,7 +1041,7 @@ def get_profile_day_trader() -> TradingProfile:
         use_model4_strategy_detector=True,
         model4_min_strategy_probability=0.50,
         model4_strong_strategy_probability=0.75,
-        model4_min_active_strategies=1,
+        model4_min_active_strategies=0,
         model4_max_active_strategies=9,
         model4_require_strong_strategy=False,
         model4_use_as_direction_vote=False,

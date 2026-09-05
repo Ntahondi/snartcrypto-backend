@@ -482,6 +482,12 @@ class SignalGenerator:
                 'direction_1h': action_1h,
                 'direction_4h': action_4h,
                 'direction_1d': action_1d,
+                'timeframe_alignment': (action_1h == final_action) and (action_4h in {final_action, 'HOLD', ''}),
+                'timeframe_confirmation': {
+                    '1h': action_1h,
+                    '4h': action_4h,
+                    '1d': action_1d,
+                },
                 'risk_level': risk_level,
                 'market_regime': market_regime,
                 'ai_model_breakdown': {
