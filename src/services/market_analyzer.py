@@ -875,11 +875,13 @@ class MarketAnalyzer:
             )
 
             # -----------------------------------------------------
-            # Generate one signal for this candle.
+            # Generate candidate signal for this candle
+            # (Validation and persistence occur inside _handle_signal)
             # -----------------------------------------------------
 
             signal = await self.generate_signal(
-                symbol
+                symbol,
+                persist=False,
             )
 
             if signal:
@@ -1073,6 +1075,7 @@ class MarketAnalyzer:
                     symbol,
                     current_data_clean,
                     current_price,
+                    save_to_history=persist,
                 )
 
                 if not signal:
@@ -1202,19 +1205,17 @@ class MarketAnalyzer:
         signal: Dict,
     ) -> None:
         """
-        Process an accepted signal.
+        Process an incoming candidate signal.
 
         Order of operations:
-
-            Signal
-               ↓
-            Portfolio risk check
-               ↓
-            Approved?
-             /   \
-           NO     YES
-           ↓       ↓
-         Skip    Open
+            1. Portfolio risk & profile gate check
+            2. If rejected and not 'test' profile:
+               -> Skip persistence, skip telegram, skip position
+            3. If approved (or 'test' profile):
+               -> Save to signals.db & HistoryManager
+               -> Update self.latest_signals
+               -> Broadcast to Telegram VIP Channel
+               -> Open position in PortfolioManager & live manager
         """
 
         symbol = signal.get(
@@ -1223,15 +1224,6 @@ class MarketAnalyzer:
         )
 
         try:
-            # -----------------------------------------------------
-            # 1. Always broadcast valid trading signals to Telegram VIP Channel
-            # -----------------------------------------------------
-            if signal.get("action") in ("BUY", "SELL"):
-                await self._broadcast_signal_safely(signal)
-
-            # -----------------------------------------------------
-            # 2. Portfolio risk validation & execution
-            # -----------------------------------------------------
             if not self.portfolio_manager:
                 self.logger.warning(
                     f"⚠️ Signal generated for {symbol}, "
@@ -1240,9 +1232,9 @@ class MarketAnalyzer:
                 )
                 return
 
-            # -----------------------------------------------------
-            # Ask portfolio manager BEFORE opening.
-            # -----------------------------------------------------
+            profile = getattr(self.portfolio_manager, "profile", None)
+            profile_name = str(getattr(profile, "name", getattr(self.settings, "TRADING_PROFILE", "day_trader"))).lower()
+            is_test_profile = profile_name == "test"
 
             should_trade = False
             reason = "Unknown"
@@ -1278,23 +1270,44 @@ class MarketAnalyzer:
                     )
 
             else:
-                # Do NOT silently bypass risk controls.
                 self.logger.error(
                     "❌ PortfolioManager does not expose "
-                    "should_open_position(). Position will NOT open."
+                    "should_open_position(). Signal rejected."
                 )
                 return
 
-            if not should_trade:
+            if not should_trade and not is_test_profile:
                 self.logger.info(
-                    f"⏭️ Portfolio rejected {symbol}: "
+                    f"⏭️ [Profile Filter] Signal for {symbol} rejected by '{profile_name}' criteria: "
                     f"{reason}"
                 )
                 return
 
             # -----------------------------------------------------
-            # Open only after approval.
+            # Signal APPROVED: Persist, Update Latest, Broadcast, & Open
             # -----------------------------------------------------
+            self.performance_metrics[
+                "total_signals"
+            ] += 1
+
+            self.performance_metrics[
+                "last_signal_time"
+            ] = datetime.now(
+                timezone.utc
+            ).isoformat()
+
+            self.latest_signals[
+                symbol
+            ] = signal
+
+            await self._save_signal_safely(
+                signal
+            )
+
+            if signal.get("action") in ("BUY", "SELL"):
+                await self._broadcast_signal_safely(
+                    signal
+                )
 
             position = (
                 self.portfolio_manager.open_position(
@@ -1327,10 +1340,6 @@ class MarketAnalyzer:
                     _live_position_manager.open_signal_position(signal)
                 except Exception as lpm_err:
                     self.logger.debug(f"Live position manager sync pass: {lpm_err}")
-
-                await self._broadcast_signal_safely(
-                    signal
-                )
 
             else:
                 self.logger.info(
@@ -1794,7 +1803,8 @@ class MarketAnalyzer:
         )
 
         signal = await self.generate_signal(
-            symbol
+            symbol,
+            persist=False,
         )
 
         if signal:
@@ -2734,3 +2744,61 @@ class MarketAnalyzer:
             )
 
             return []
+
+    def get_market_analysis(self, symbol: str) -> Dict[str, Any]:
+        """Return comprehensive live market metrics, trend, and stationary features for a symbol."""
+        sym_clean = str(symbol).upper().replace("/", "").replace("-", "").replace("_", "")
+        df = self.market_data.get(sym_clean)
+
+        current_price = 0.0
+        atr = 0.0
+        rsi = 50.0
+        volatility = 0.0
+        regime = "NEUTRAL"
+
+        if df is not None and not df.empty:
+            if "close" in df.columns:
+                current_price = float(df["close"].iloc[-1])
+            if "atr_14" in df.columns:
+                atr = float(df["atr_14"].iloc[-1])
+            elif "atr" in df.columns:
+                atr = float(df["atr"].iloc[-1])
+            if "rsi_14" in df.columns:
+                rsi = float(df["rsi_14"].iloc[-1])
+            if "volatility_pct" in df.columns:
+                volatility = float(df["volatility_pct"].iloc[-1])
+            elif "volatility" in df.columns:
+                volatility = float(df["volatility"].iloc[-1])
+            if "market_regime" in df.columns:
+                regime = str(df["market_regime"].iloc[-1])
+
+        if current_price <= 0:
+            from src.api.endpoints import get_live_symbol_price
+            current_price = get_live_symbol_price(sym_clean)
+
+        latest_sig = self.latest_signals.get(sym_clean, {})
+
+        return {
+            "symbol": sym_clean,
+            "current_price": current_price,
+            "atr": atr,
+            "rsi": rsi,
+            "volatility": volatility,
+            "market_regime": regime,
+            "latest_signal": latest_sig.get("action", "HOLD"),
+            "confidence": latest_sig.get("confidence", 0.0),
+            "signal_strength": latest_sig.get("signal_strength", 0.0),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def get_market_regime(self, symbol: str) -> Dict[str, Any]:
+        """Return the current market regime classification and volatility parameters for a symbol."""
+        analysis = self.get_market_analysis(symbol)
+        return {
+            "symbol": analysis["symbol"],
+            "regime": analysis["market_regime"],
+            "volatility": analysis["volatility"],
+            "rsi": analysis["rsi"],
+            "current_price": analysis["current_price"],
+            "timestamp": analysis["timestamp"],
+        }

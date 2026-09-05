@@ -293,6 +293,7 @@ class SignalGenerator:
         current_data: Optional[pd.DataFrame] = None,
         current_price: Optional[float] = None,
         timeframe: str = "1h",
+        save_to_history: bool = True,
     ) -> Optional[Dict]:
         """
         Generate high-conviction trade signal combining:
@@ -566,7 +567,7 @@ class SignalGenerator:
                 f"Agree={model4_eval.get('agreement_score', 0.0):.0%}) | Conf: {confidence:.1%}"
             )
 
-            if self.history_manager:
+            if self.history_manager and save_to_history:
                 self.history_manager.save_signal(signal, outcome="OPEN")
 
             return signal

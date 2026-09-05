@@ -14,7 +14,7 @@ if sys.platform == "win32":
     
 import os
 import uvicorn
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 import asyncio
@@ -37,7 +37,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 from src.core.config import get_settings, Settings
-from src.api.endpoints import router as api_router, set_market_analyzer
+from src.api.endpoints import router as api_router, set_market_analyzer, websocket_live_stream
 from src.services.market_analyzer import MarketAnalyzer
 from src.utils.safe_logger import SafeLogger
 
@@ -191,6 +191,16 @@ app.add_middleware(
 
 # Include API routes
 app.include_router(api_router)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# LIVE REAL-TIME WEBSOCKET STREAMING (ROOT & API)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+@app.websocket("/ws/live")
+@app.websocket("/ws")
+async def root_websocket_live_stream(websocket: WebSocket) -> None:
+    """Sub-second live streaming feed at root URL."""
+    await websocket_live_stream(websocket)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

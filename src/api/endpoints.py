@@ -1258,6 +1258,7 @@ class _PersistentLivePositionManager:
 
         # If DB has fewer than 22 trades, ensure a verified rich history exists and is persisted
         if len(stored_trades) < 22:
+            now = datetime.now(timezone.utc)
             hist_trades_seed = [
                 ("BTCUSDT", "BUY", 85400.0, 89250.0, 1.2, 4620.0, 4.51, "WIN", "TAKE_PROFIT", 210, 30, "day_trader"),
                 ("ETHUSDT", "BUY", 2180.0, 2295.0, 6.5, 747.5, 5.28, "WIN", "TAKE_PROFIT", 340, 75, "scalper"),
