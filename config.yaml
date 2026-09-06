@@ -49,6 +49,12 @@ data:
     - "LINKUSDT"
     - "SOLUSDT"
     - "DOTUSDT"
+    - "AAVEUSDT"
+    - "SUIUSDT"
+    - "UNIUSDT"
+    - "LTCUSDT"
+    - "SUSHIUSDT"
+    - "ZECUSDT"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # TRADING & RISK SETTINGS

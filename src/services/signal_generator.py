@@ -304,7 +304,7 @@ class SignalGenerator:
             return self.get_latest_signal(symbol)
 
         try:
-            # Fallback if current_data not supplied
+            # Validate live market data presence
             if current_data is None or current_data.empty:
                 if hasattr(self, "history_manager") and self.history_manager:
                     storage_data = getattr(self.history_manager, "storage", None)
@@ -312,14 +312,15 @@ class SignalGenerator:
                         current_data = storage_data.get_recent_candles(symbol, limit=100)
 
             if current_data is None or len(current_data) < 10:
-                # Return most recent stored signal if live candles are not available
-                return self.get_latest_signal(symbol)
+                logger.warning(f"⚠️ [TRADING HALT] Live market data unavailable for {symbol} ({0 if current_data is None else len(current_data)} candles) - signal generation skipped.")
+                return None
 
             if current_price is None or current_price <= 0:
-                if "close" in current_data.columns:
+                if "close" in current_data.columns and float(current_data["close"].iloc[-1]) > 0:
                     current_price = float(current_data["close"].iloc[-1])
                 else:
-                    return self.get_latest_signal(symbol)
+                    logger.warning(f"⚠️ [TRADING HALT] Genuine market price unavailable for {symbol} - signal generation skipped.")
+                    return None
 
             # Ensure all 58 technical indicators are computed if raw OHLCV was provided
             if "rsi_14" not in current_data.columns or len(current_data.columns) < 20:

@@ -1277,6 +1277,38 @@ class BybitDataCollector:
             logger.warning(f"Bybit klines failed for {bybit_symbol}: {exc}")
         return None
 
+    async def fetch_ticker(self, symbol: str) -> Optional[Dict[str, float]]:
+        """Fetch genuine live Bybit ticker with funding rate, open interest, and bid/ask spread."""
+        bybit_symbol = self.to_bybit_symbol(symbol)
+        url = f"{self.base_url}/v5/market/tickers"
+        params = {"category": "linear", "symbol": bybit_symbol}
+        try:
+            session = await self.get_session()
+            async with session.get(url, params=params) as resp:
+                if resp.status == 200:
+                    payload = await resp.json()
+                    item = (payload.get("result", {}).get("list", []) or [{}])[0]
+                    if item:
+                        last_price = float(item.get("lastPrice", 0.0) or 0.0)
+                        funding_rate = float(item.get("fundingRate", 0.0) or 0.0)
+                        open_interest = float(item.get("openInterest", 0.0) or 0.0)
+                        open_interest_usd = float(item.get("openInterestValue", 0.0) or (open_interest * last_price if last_price > 0 else 0.0))
+                        best_bid = float(item.get("bid1Price", 0.0) or 0.0)
+                        best_ask = float(item.get("ask1Price", 0.0) or 0.0)
+                        spread_pct = ((best_ask - best_bid) / last_price) if (last_price > 0 and best_ask >= best_bid) else 0.0
+                        return {
+                            "last_price": last_price,
+                            "funding_rate": funding_rate,
+                            "open_interest": open_interest,
+                            "open_interest_usd": open_interest_usd,
+                            "best_bid": best_bid,
+                            "best_ask": best_ask,
+                            "spread_pct": spread_pct,
+                        }
+        except Exception as exc:
+            logger.warning(f"Bybit ticker fetch failed for {bybit_symbol}: {exc}")
+        return None
+
     async def fetch_complete_data(
         self,
         symbol: str,
@@ -1286,19 +1318,26 @@ class BybitDataCollector:
         df = await self.fetch_historical_data(symbol, interval, limit)
         if df is None or df.empty:
             return None
-        # Add baseline derivative fields so DataProcessor can engineer full features
-        if "funding_rate" not in df.columns:
-            df["funding_rate"] = 0.0001
-        if "funding_rate_annualized" not in df.columns:
-            df["funding_rate_annualized"] = 0.1095
-        if "open_interest" not in df.columns:
-            df["open_interest"] = df["volume"] * 2.5
-        if "open_interest_usd" not in df.columns:
-            df["open_interest_usd"] = df["quote_asset_volume"] * 2.5
-        if "spread_pct" not in df.columns:
-            df["spread_pct"] = 0.0002
-        if "order_imbalance" not in df.columns:
+            
+        ticker = await self.fetch_ticker(symbol)
+        if ticker:
+            df["funding_rate"] = ticker["funding_rate"]
+            df["funding_rate_annualized"] = ticker["funding_rate"] * 3 * 365
+            df["open_interest"] = ticker["open_interest"]
+            df["open_interest_usd"] = ticker["open_interest_usd"]
+            df["spread_pct"] = ticker["spread_pct"]
+            df["best_bid"] = ticker["best_bid"]
+            df["best_ask"] = ticker["best_ask"]
             df["order_imbalance"] = 0.0
+            df["buy_pressure"] = 0.5
+        else:
+            df["funding_rate"] = 0.0
+            df["funding_rate_annualized"] = 0.0
+            df["open_interest"] = 0.0
+            df["open_interest_usd"] = 0.0
+            df["spread_pct"] = 0.0
+            df["order_imbalance"] = 0.0
+            df["buy_pressure"] = 0.5
         return df
 
 

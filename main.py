@@ -246,18 +246,38 @@ if getattr(settings_for_docs, "ENABLE_API_DOCS", True):
             routes=app.routes,
         )
 
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# CORS MIDDLEWARE (STRICT PRODUCTION WHITELIST)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+settings_cors = get_settings()
+
+if settings_cors.ENVIRONMENT.lower() == "production":
+    configured_origins = getattr(settings_cors, "CORS_ORIGINS", [])
+    cors_allowed_origins = [
+        "https://snartcrypto.snartpace.com",
+        "https://backend.snartpace.com",
+        "https://snartcrypto-frontend.stivinntahond214.workers.dev",
+    ]
+    if isinstance(configured_origins, list):
+        for origin in configured_origins:
+            if origin and origin not in cors_allowed_origins and origin != "*":
+                cors_allowed_origins.append(origin)
+else:
+    # Development / Testing Mode
+    cors_allowed_origins = [
         "https://snartcrypto.snartpace.com",
         "http://localhost:57247",
         "http://localhost:8000",
         "http://127.0.0.1:3000",
+        "http://localhost:3000",
         "*"
-    ],
+    ]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
 )
 

@@ -233,6 +233,15 @@ class Settings(BaseSettings):
         description="HTTP Basic Auth password for accessing API documentation. Must be set in .env in production.",
     )
 
+    CORS_ORIGINS: List[str] = Field(
+        default_factory=lambda: [
+            "https://snartcrypto.snartpace.com",
+            "https://backend.snartpace.com",
+            "https://snartcrypto-frontend.stivinntahond214.workers.dev",
+        ],
+        description="Allowed CORS origins for REST API in production.",
+    )
+
     API_PREFIX: str = Field(
         default="/api/v1",
         description="REST API prefix.",
@@ -521,6 +530,12 @@ class Settings(BaseSettings):
             "LINKUSDT",
             "SOLUSDT",
             "DOTUSDT",
+            "AAVEUSDT",
+            "SUIUSDT",
+            "UNIUSDT",
+            "LTCUSDT",
+            "SUSHIUSDT",
+            "ZECUSDT",
         ],
     )
 
