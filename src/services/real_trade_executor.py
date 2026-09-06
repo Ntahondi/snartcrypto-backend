@@ -1185,6 +1185,19 @@ class RealTradeExecutor:
                     f"{symbol_ccxt}: {exc}"
                 )
 
+            if exchange_name == "BITGET":
+                try:
+                    await exchange.set_position_mode(
+                        False,
+                        symbol_ccxt,
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        f"{exchange_name}: "
+                        f"Position mode notice for "
+                        f"{symbol_ccxt}: {exc}"
+                    )
+
             logger.info(
                 f"⚙️ {exchange_name}: "
                 f"{symbol_ccxt} configured "
@@ -1999,6 +2012,14 @@ class RealTradeExecutor:
             entry_params[
                 "clientOid"
             ] = client_order_id
+            # In Bitget V2 API, unilateral (one-way) position mode requires oneWayMode=True and tradeSide='open'.
+            # Without this, Bitget rejects with code 40774 ("The order type for unilateral position must also be the unilateral position type.")
+            entry_params[
+                "oneWayMode"
+            ] = True
+            entry_params[
+                "tradeSide"
+            ] = "open"
 
         entry_order = None
 
@@ -2062,7 +2083,20 @@ class RealTradeExecutor:
                     )
                 )
 
-            except Exception:
+            except Exception as exc:
+
+                err_msg = str(exc)
+                if exchange_name == "BITGET" and "40774" in err_msg and attempt < self.max_retries:
+                    logger.warning(
+                        f"⚠️ {exchange_name}: Caught 40774 position mode conflict on attempt {attempt}. Retrying with alternate mode..."
+                    )
+                    if entry_params.get("oneWayMode"):
+                        entry_params.pop("oneWayMode", None)
+                        entry_params["tradeSide"] = "open"
+                    else:
+                        entry_params["oneWayMode"] = True
+                        entry_params["tradeSide"] = "open"
+                    continue
 
                 raise
 
