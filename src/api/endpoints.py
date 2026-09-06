@@ -167,6 +167,8 @@ def set_market_analyzer(analyzer: Any) -> None:
             services.orderbook_monitor = analyzer.orderbook_monitor
         if hasattr(analyzer, 'portfolio_manager') and analyzer.portfolio_manager:
             services.portfolio_manager = analyzer.portfolio_manager
+            if hasattr(analyzer.portfolio_manager, 'trade_executor') and analyzer.portfolio_manager.trade_executor:
+                services.trade_executor = analyzer.portfolio_manager.trade_executor
         if hasattr(analyzer, 'signal_generator') and analyzer.signal_generator:
             services.signal_generator = analyzer.signal_generator
         if hasattr(analyzer, 'history_manager') and analyzer.history_manager:
@@ -1309,7 +1311,7 @@ class _PersistentLivePositionManager:
         self.data_storage: Optional[DataStorage] = None
 
     def initialize_if_needed(self):
-        if self._initialized and self.positions:
+        if self._initialized:
             return
 
         settings = get_settings()
@@ -1317,8 +1319,9 @@ class _PersistentLivePositionManager:
 
         if self.data_storage is None:
             try:
-                db_path = getattr(settings, "database_path", "data/app.db")
-                self.data_storage = DataStorage(db_path)
+                self.data_storage = _get_storage()
+                # Permanently purge any corrupted historical spike rows from database on startup
+                self.data_storage.purge_anomalous_closed_trades()
             except Exception as e:
                 logger.warning(f"DataStorage init in LivePositionManager: {e}")
                 self.data_storage = None
@@ -1403,14 +1406,19 @@ class _PersistentLivePositionManager:
                     except Exception:
                         pass
 
-        # Sanitize stored trades: prune any anomalous records (corrupted PnL > 100% or invalid 5x mark spikes)
+        # Sanitize stored trades: prune and purge from DB any anomalous records (corrupted PnL > 100% or invalid 4x mark spikes)
         cleaned_trades = []
         for t in stored_trades:
             pnl_pct = abs(float(t.get("pnl_percentage", 0.0)))
             entry_val = float(t.get("entry_price", 0.0))
             exit_val = float(t.get("exit_price", 0.0))
-            if pnl_pct > 100.0 or (entry_val > 0 and exit_val / entry_val > 4.0):
-                logger.warning(f"🧹 Pruned anomalous trade record {t.get('id')} ({t.get('symbol')}: entry={entry_val}, exit={exit_val}, pnl={pnl_pct}%)")
+            if pnl_pct > 100.0 or (entry_val > 0 and (exit_val / entry_val > 4.0 or entry_val / exit_val > 4.0)):
+                logger.warning(f"🧹 Pruned and purged anomalous trade record {t.get('id')} ({t.get('symbol')}: entry={entry_val}, exit={exit_val}, pnl={pnl_pct}%)")
+                if self.data_storage and t.get("id"):
+                    try:
+                        self.data_storage.delete_closed_trade(t["id"])
+                    except Exception:
+                        pass
                 continue
             cleaned_trades.append(t)
 
@@ -2798,6 +2806,15 @@ async def forgot_password(request: ForgotPasswordRequest) -> APIResponse:
             }
         )
 
+    # Check OTP rate limit: strictly maximum 2 reset emails per 1 hour
+    rate_info = storage.check_otp_rate_limit(email, purpose="reset", max_per_hour=2)
+    if not rate_info["allowed"]:
+        wait_min = rate_info["retry_after_minutes"]
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Rate limit reached: Maximum 2 password reset emails per hour. Please wait {wait_min} minute{'s' if wait_min > 1 else ''} before requesting another code."
+        )
+
     # Generate secure 6-digit numeric OTP
     otp_code = f"{secrets.randbelow(900000) + 100000}"
     storage.create_otp(email, otp_code, purpose="reset", expires_in_minutes=15)
@@ -2812,6 +2829,8 @@ async def forgot_password(request: ForgotPasswordRequest) -> APIResponse:
             "success": True,
             "message": "A 6-digit password reset code has been sent to your email address.",
             "is_simulated": not email_service.is_configured,
+            "remaining_emails": max(0, rate_info["remaining"] - 1),
+            "hourly_limit": 2,
         }
     )
 
@@ -2886,6 +2905,15 @@ async def send_verification_otp(
     if not email:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email is required.")
 
+    # Enforce email OTP rate limit: strictly 2 emails per 1 hour per user
+    rate_info = storage.check_otp_rate_limit(email, purpose="verify_email", max_per_hour=2)
+    if not rate_info["allowed"]:
+        wait_min = rate_info["retry_after_minutes"]
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Rate limit reached: Maximum 2 verification emails per hour. Please wait {wait_min} minute{'s' if wait_min > 1 else ''} before requesting another code."
+        )
+
     otp_code = f"{secrets.randbelow(900000) + 100000}"
     storage.create_otp(email, otp_code, purpose="verify_email", expires_in_minutes=15)
 
@@ -2899,6 +2927,8 @@ async def send_verification_otp(
             "success": True,
             "message": "Verification code sent to your email address.",
             "is_simulated": not email_service.is_configured,
+            "remaining_emails": max(0, rate_info["remaining"] - 1),
+            "hourly_limit": 2,
         }
     )
 

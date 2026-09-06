@@ -858,7 +858,47 @@ class DataStorage:
             except Exception as e:
                 logger.error(f"Error fetching stored closed trades: {e}")
                 return []
-    
+
+    def delete_closed_trade(self, trade_id: str) -> bool:
+        """Delete a closed trade by ID (used to purge corrupted or anomalous historical records)."""
+        with self._lock:
+            try:
+                if self.use_db and self.db_path.exists():
+                    conn = self._get_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("DELETE FROM closed_trades WHERE id = ?", (trade_id,))
+                    affected = cursor.rowcount
+                    conn.commit()
+                    conn.close()
+                    return affected > 0
+                return False
+            except Exception as e:
+                logger.error(f"Error deleting closed trade {trade_id}: {e}")
+                return False
+
+    def purge_anomalous_closed_trades(self) -> int:
+        """Permanently delete anomalous closed trades from SQLite (e.g. corrupted historical spikes)."""
+        with self._lock:
+            try:
+                if self.use_db and self.db_path.exists():
+                    conn = self._get_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        DELETE FROM closed_trades 
+                        WHERE ABS(pnl_percentage) > 100.0 
+                           OR (entry_price > 0 AND (exit_price / entry_price > 4.0 OR entry_price / exit_price > 4.0))
+                    """)
+                    deleted_count = cursor.rowcount
+                    conn.commit()
+                    conn.close()
+                    if deleted_count > 0:
+                        logger.info(f"🧹 Purged {deleted_count} anomalous trades from database.")
+                    return deleted_count
+                return 0
+            except Exception as e:
+                logger.error(f"Error purging anomalous closed trades: {e}")
+                return 0
+
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # PATTERN DRAWING OPERATIONS
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1575,6 +1615,93 @@ class DataStorage:
         except Exception as e:
             logger.error(f"Error updating user verified status: {e}")
             return False
+
+    def check_otp_rate_limit(
+        self,
+        email: str,
+        purpose: Optional[str] = "verify_email",
+        max_per_hour: int = 2,
+    ) -> Dict[str, Any]:
+        """
+        Check if the email has exceeded the OTP sending rate limit (strictly max_per_hour per 1 hour, default 2).
+        Returns a dict:
+            {
+                "allowed": bool,
+                "count": int,
+                "remaining": int,
+                "retry_after_minutes": int,
+                "retry_after_seconds": int,
+            }
+        """
+        import math
+        from datetime import datetime
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            
+            clean_email = email.strip().lower()
+            if purpose:
+                cursor.execute(
+                    '''
+                    SELECT created_at 
+                    FROM password_resets 
+                    WHERE LOWER(email) = LOWER(?) AND purpose = ? AND created_at >= datetime('now', '-1 hour')
+                    ORDER BY created_at ASC
+                    ''',
+                    (clean_email, purpose)
+                )
+            else:
+                cursor.execute(
+                    '''
+                    SELECT created_at 
+                    FROM password_resets 
+                    WHERE LOWER(email) = LOWER(?) AND created_at >= datetime('now', '-1 hour')
+                    ORDER BY created_at ASC
+                    ''',
+                    (clean_email,)
+                )
+            rows = cursor.fetchall()
+            conn.close()
+            
+            count = len(rows)
+            if count >= max_per_hour:
+                # The oldest OTP in this rolling 1-hour window determines when the next slot frees up
+                oldest_created_at_str = rows[0][0]
+                try:
+                    cleaned_ts = oldest_created_at_str.replace("T", " ").split(".")[0]
+                    oldest_dt = datetime.strptime(cleaned_ts, "%Y-%m-%d %H:%M:%S")
+                    now_utc = datetime.utcnow()
+                    elapsed_seconds = (now_utc - oldest_dt).total_seconds()
+                    retry_seconds = max(1, int(3600 - elapsed_seconds))
+                except Exception as ex:
+                    logger.warning(f"Error parsing created_at timestamp '{oldest_created_at_str}': {ex}")
+                    retry_seconds = 3600
+                
+                retry_minutes = max(1, math.ceil(retry_seconds / 60))
+                return {
+                    "allowed": False,
+                    "count": count,
+                    "remaining": 0,
+                    "retry_after_minutes": retry_minutes,
+                    "retry_after_seconds": retry_seconds,
+                }
+            
+            return {
+                "allowed": True,
+                "count": count,
+                "remaining": max(0, max_per_hour - count),
+                "retry_after_minutes": 0,
+                "retry_after_seconds": 0,
+            }
+        except Exception as e:
+            logger.error(f"Error checking OTP rate limit for {email}: {e}")
+            return {
+                "allowed": True,
+                "count": 0,
+                "remaining": max_per_hour,
+                "retry_after_minutes": 0,
+                "retry_after_seconds": 0,
+            }
 
     def create_otp(
         self,

@@ -71,12 +71,6 @@ async def lifespan(app: FastAPI):
         market_analyzer_instance = MarketAnalyzer(settings)
         await market_analyzer_instance.initialize()
         
-        # Set market analyzer for API endpoints
-        try:
-            set_market_analyzer(market_analyzer_instance)
-        except NameError:
-            logger.warning("⚠️ set_market_analyzer not found - skipping")
-        
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 🔥 FIX: Initialize Portfolio Manager (Only once)
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -96,6 +90,12 @@ async def lifespan(app: FastAPI):
                 logger.info(f"💰 Portfolio Manager initialized with profile: {default_profile.trading_style.value} (Max hold: {default_profile.max_holding_hours}h)")
             except Exception as e:
                 logger.error(f"❌ Failed to initialize portfolio manager: {e}")
+
+        # Set market analyzer and connected trade executor for API endpoints
+        try:
+            set_market_analyzer(market_analyzer_instance)
+        except NameError:
+            logger.warning("⚠️ set_market_analyzer not found - skipping")
         
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # 🔥 FIX: Order Book Monitor - ONLY in market_analyzer
