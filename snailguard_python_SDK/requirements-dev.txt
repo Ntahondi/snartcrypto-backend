@@ -1,0 +1,19 @@
+# Development dependencies
+-r requirements.txt
+
+# Testing
+pytest>=6.0.0
+pytest-cov>=2.0.0
+requests>=2.25.0
+
+# Code quality
+black>=21.0.0
+flake8>=3.9.0
+mypy>=0.910
+
+# Documentation
+mkdocs>=1.1.0
+mkdocs-material>=7.0.0
+
+# Jupyter for experimentation
+jupyter>=1.0.0

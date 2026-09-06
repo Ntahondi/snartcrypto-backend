@@ -1,0 +1,13 @@
+# Core dependencies
+numpy>=1.21.0
+scikit-learn>=1.0.0
+xgboost>=1.5.0
+
+# Web framework support
+flask>=2.0.0
+fastapi>=0.68.0
+uvicorn>=0.15.0
+pydantic>=1.8.0
+
+# Optional: for enhanced performance
+joblib>=1.1.0

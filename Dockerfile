@@ -28,6 +28,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy all project source code into container
 COPY . .
 
+# Install local SnailGuard Python SDK if present
+RUN if [ -f "./snailguard_python_SDK/setup.py" ]; then pip install --no-cache-dir -e ./snailguard_python_SDK; fi
+
 # Create persistent directory folders inside container
 RUN mkdir -p data models positions signal_history logs
 

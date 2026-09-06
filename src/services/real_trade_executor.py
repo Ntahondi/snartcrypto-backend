@@ -59,7 +59,21 @@ from src.core.config import Settings, get_settings
 from src.utils.safe_logger import SafeLogger
 
 
-logger = SafeLogger.get_logger(__name__)
+class InsufficientBalanceError(Exception):
+    """Raised when exchange futures balance is below minimum viable threshold."""
+
+    def __init__(
+        self,
+        exchange_name: str,
+        balance: float,
+        message: Optional[str] = None,
+    ) -> None:
+        self.exchange_name = exchange_name
+        self.balance = balance
+        super().__init__(
+            message
+            or f"{exchange_name}: Available balance is ${balance:.2f} (< $5.00 min threshold)."
+        )
 
 
 class RealTradeExecutor:
@@ -927,18 +941,24 @@ class RealTradeExecutor:
 
             message = str(exc).lower()
 
-            # Already in one-way mode is safe.
+            # Already in one-way mode or active positions exist
             already_one_way = (
                 "already" in message
                 or "same" in message
                 or "no change" in message
                 or "not modified" in message
+                or "consistent" in message
+                or "repeat" in message
+                or "40775" in message
+                or "40017" in message
+                or "has position" in message
+                or "cannot be changed" in message
             )
 
             if already_one_way:
 
-                logger.debug(
-                    f"BITGET: {symbol_ccxt} "
+                logger.info(
+                    f"⚙️ BITGET: {symbol_ccxt} "
                     "already in one-way position mode."
                 )
 
@@ -1040,11 +1060,10 @@ class RealTradeExecutor:
             exchange_name,
         )
 
-        if free_usdt <= 0:
-            raise RuntimeError(
-                f"{exchange_name}: "
-                "Insufficient futures balance. "
-                f"Free USDT=${free_usdt:.2f}"
+        if free_usdt < 5.0:
+            raise InsufficientBalanceError(
+                exchange_name,
+                free_usdt,
             )
 
         target_margin = (
@@ -1946,12 +1965,22 @@ class RealTradeExecutor:
                         ]
                     )
 
+                except InsufficientBalanceError as exc:
+
                     logger.info(
-                        f"✅ {exchange_name}: "
-                        f"OPEN {side.upper()} "
-                        f"{filled} {symbol_ccxt} "
-                        f"@ {average_price:.8f}"
+                        f"ℹ️ {exchange_name}: Available balance is "
+                        f"${exc.balance:.2f} (< $5.00 min). Skipping order execution on this exchange."
                     )
+
+                    exchange_results[
+                        exchange_name
+                    ] = {
+                        "success": True,
+                        "status": "SKIPPED_INSUFFICIENT_BALANCE",
+                        "symbol": symbol_ccxt,
+                        "free_usdt": exc.balance,
+                        "note": "Skipped due to insufficient balance without failing trade.",
+                    }
 
                 except Exception as exc:
 
@@ -2153,11 +2182,36 @@ class RealTradeExecutor:
                         action,
                     )
 
-                    close_quantity = (
-                        live_quantity
-                        if live_quantity > 0
-                        else quantity
-                    )
+                    if live_quantity <= 0:
+                        logger.info(
+                            f"ℹ️ {exchange_name}: No active live position found on exchange for "
+                            f"{symbol_ccxt} (live qty=0.0). Treating as already closed."
+                        )
+
+                        await self._cancel_symbol_open_orders(
+                            exchange,
+                            exchange_name,
+                            symbol_ccxt,
+                        )
+
+                        exchange_results[
+                            exchange_name
+                        ] = {
+                            "success": True,
+                            "status": "ALREADY_CLOSED",
+                            "symbol": symbol_ccxt,
+                            "quantity": 0.0,
+                            "reason": reason,
+                            "note": "Position already closed or was never opened on exchange.",
+                        }
+
+                        successful.append(
+                            exchange_name
+                        )
+
+                        continue
+
+                    close_quantity = live_quantity
 
                     close_quantity = float(
                         exchange.amount_to_precision(
