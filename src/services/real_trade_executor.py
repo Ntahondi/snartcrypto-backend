@@ -58,6 +58,8 @@ import ccxt.async_support as ccxt
 from src.core.config import Settings, get_settings
 from src.utils.safe_logger import SafeLogger
 
+logger = SafeLogger.get_logger(__name__)
+
 
 class InsufficientBalanceError(Exception):
     """Raised when exchange futures balance is below minimum viable threshold."""
