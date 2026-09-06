@@ -1908,26 +1908,21 @@ class RealTradeExecutor:
             )
             return None
 
-        # Sizing adaptation: If the paper/requested amount requires more
-        # margin than available on this real exchange, dynamically scale
-        # the trade to fit the actual account equity (allocating ~25%
-        # of available margin per trade to support 3-4 concurrent positions).
-        notional = amount * reference_price
-        est_margin = notional / max(self.leverage, 1)
-        req_margin = est_margin * self.NOTIONAL_SLIPPAGE_BUFFER
+        # Real account sizing:
+        # Every real exchange operates independently based on its own actual equity.
+        # We size each trade directly from the exchange's available free USDT,
+        # allocating 25% of available margin per position (allowing 3-4 concurrent
+        # positions simultaneously on that exchange).
         available_margin = free_usdt * self.BALANCE_SAFETY_BUFFER
+        target_margin = available_margin * 0.25
+        target_notional = target_margin * max(self.leverage, 1)
+        amount = target_notional / reference_price
 
-        if req_margin > available_margin:
-            target_margin = available_margin * 0.25
-            target_notional = target_margin * max(self.leverage, 1)
-            scaled_amount = target_notional / reference_price
-
-            logger.info(
-                f"⚖️ {exchange_name}: Sizing trade to real exchange balance. "
-                f"Free=${free_usdt:.2f}, Target Margin=${target_margin:.2f} (25%), "
-                f"Notional=${target_notional:.2f}, Qty={scaled_amount:.6f}"
-            )
-            amount = scaled_amount
+        logger.info(
+            f"⚖️ {exchange_name}: Sized trade to real exchange equity. "
+            f"Free=${free_usdt:.2f}, Margin Allocation=${target_margin:.2f} (25%), "
+            f"Leverage={self.leverage}x, Notional=${target_notional:.2f}, Qty={amount:.6f}"
+        )
 
         # -----------------------------------------------------
         # Format quantity.
