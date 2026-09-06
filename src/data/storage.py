@@ -56,9 +56,26 @@ class DataStorage:
     # INITIALIZATION
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     
+    def _get_connection(self) -> sqlite3.Connection:
+        """
+        Create a hardened SQLite connection with enterprise concurrency pragmas:
+        - WAL mode (Write-Ahead Logging): Readers do not block writers, writers do not block readers.
+        - busy_timeout=30000: Wait up to 30s at C engine level before throwing busy error.
+        - synchronous=NORMAL: Eliminates excessive disk sync pauses.
+        - cache_size=-64000: 64MB memory page cache for fast queries.
+        - temp_store=MEMORY: Keeps temp tables in RAM.
+        """
+        conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("PRAGMA busy_timeout = 30000;")
+        conn.execute("PRAGMA synchronous = NORMAL;")
+        conn.execute("PRAGMA cache_size = -64000;")
+        conn.execute("PRAGMA temp_store = MEMORY;")
+        return conn
+
     def _init_database(self):
         """Initialize SQLite database schema"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
         
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -481,7 +498,7 @@ class DataStorage:
     
     def _save_signal_db(self, signal: Dict) -> bool:
         """Save signal to database"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
         
         cursor.execute('''
@@ -541,7 +558,7 @@ class DataStorage:
     
     def _update_signal_db(self, signal: Dict) -> bool:
         """Update signal in database"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
         
         cursor.execute('''
@@ -595,7 +612,7 @@ class DataStorage:
     
     def _get_signal_db(self, signal_id: str) -> Optional[Dict]:
         """Get signal from database"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
@@ -645,7 +662,7 @@ class DataStorage:
     def _get_signals_db(self, symbol: Optional[str], hours: int,
                        limit: int, include_closed: bool) -> List[Dict]:
         """Get signals from database"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
@@ -736,7 +753,7 @@ class DataStorage:
         with self._lock:
             try:
                 if self.use_db and self.db_path.exists():
-                    conn = sqlite3.connect(self.db_path)
+                    conn = self._get_connection()
                     conn.row_factory = sqlite3.Row
                     cursor = conn.cursor()
                     cursor.execute('''
@@ -769,7 +786,7 @@ class DataStorage:
         with self._lock:
             try:
                 if self.use_db and self.db_path.exists():
-                    conn = sqlite3.connect(self.db_path)
+                    conn = self._get_connection()
                     cursor = conn.cursor()
                     cursor.execute('''
                         INSERT OR REPLACE INTO closed_trades (
@@ -817,7 +834,7 @@ class DataStorage:
         with self._lock:
             try:
                 if self.use_db and self.db_path.exists():
-                    conn = sqlite3.connect(self.db_path)
+                    conn = self._get_connection()
                     conn.row_factory = sqlite3.Row
                     cursor = conn.cursor()
                     if symbol:
@@ -860,7 +877,7 @@ class DataStorage:
     
     def _save_pattern_db(self, drawing: Dict) -> bool:
         """Save pattern to database"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
         
         cursor.execute('''
@@ -909,7 +926,7 @@ class DataStorage:
     def _get_patterns_db(self, symbol: Optional[str], pattern_type: Optional[str],
                         hours: int, limit: int) -> List[Dict]:
         """Get patterns from database"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
@@ -992,7 +1009,7 @@ class DataStorage:
         
         with self._lock:
             try:
-                conn = sqlite3.connect(self.db_path)
+                conn = self._get_connection()
                 
                 # Prepare data
                 df = df.copy()
@@ -1022,7 +1039,7 @@ class DataStorage:
             return pd.DataFrame()
         
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             
             query = '''
                 SELECT * FROM market_data 
@@ -1056,7 +1073,7 @@ class DataStorage:
         
         with self._lock:
             try:
-                conn = sqlite3.connect(self.db_path)
+                conn = self._get_connection()
                 cursor = conn.cursor()
                 
                 cursor.execute('''
@@ -1140,7 +1157,7 @@ class DataStorage:
     
     def _get_performance_db(self, symbol: Optional[str]) -> Dict:
         """Get performance from database"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
@@ -1200,7 +1217,7 @@ class DataStorage:
     
     def _save_pattern_stats_db(self, pattern_stats: Dict) -> bool:
         """Save pattern stats to database"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
         
         for pattern_type, stats in pattern_stats.items():
@@ -1252,7 +1269,7 @@ class DataStorage:
     
     def _get_pattern_stats_db(self) -> Dict:
         """Get pattern stats from database"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
@@ -1298,7 +1315,7 @@ class DataStorage:
     
     def _cleanup_db(self, days: int) -> int:
         """Clean up database"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
         
         cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
@@ -1373,7 +1390,7 @@ class DataStorage:
         
         if self.use_db:
             try:
-                conn = sqlite3.connect(self.db_path)
+                conn = self._get_connection()
                 cursor = conn.cursor()
                 cursor.execute('SELECT COUNT(*) FROM signals')
                 count = cursor.fetchone()[0]
@@ -1427,7 +1444,7 @@ class DataStorage:
         """Create a new user record with strict email normalization and uniqueness."""
         try:
             clean_email = email.strip().lower() if email else None
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             cursor = conn.cursor()
             cursor.execute(
                 '''
@@ -1446,7 +1463,7 @@ class DataStorage:
     def get_user_by_id(self, user_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve user by user_id."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
@@ -1460,7 +1477,7 @@ class DataStorage:
     def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         """Retrieve user by email."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM users WHERE LOWER(email) = LOWER(?)', (email,))
@@ -1474,7 +1491,7 @@ class DataStorage:
     def get_user_by_provider(self, auth_provider: str, provider_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve user by auth provider and provider ID."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
@@ -1491,7 +1508,7 @@ class DataStorage:
     def update_user_role(self, user_id: str, role: str) -> bool:
         """Update a user's role (guest, pro, vip, vvip, admin)."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             cursor = conn.cursor()
             cursor.execute('UPDATE users SET role = ? WHERE user_id = ?', (role, user_id))
             conn.commit()
@@ -1504,7 +1521,7 @@ class DataStorage:
     def update_user_last_login(self, user_id: str) -> bool:
         """Update last login timestamp."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             cursor = conn.cursor()
             cursor.execute(
                 'UPDATE users SET last_login = ? WHERE user_id = ?',
@@ -1520,7 +1537,7 @@ class DataStorage:
     def update_user_password(self, email_or_user_id: str, password_hash: str) -> bool:
         """Update a user's password hash."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             cursor = conn.cursor()
             cursor.execute(
                 '''
@@ -1541,7 +1558,7 @@ class DataStorage:
     def set_user_verified(self, email_or_user_id: str, is_verified: bool = True) -> bool:
         """Mark a user's email address as verified."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             cursor = conn.cursor()
             cursor.execute(
                 '''
@@ -1572,7 +1589,7 @@ class DataStorage:
         reset_token = token or secrets.token_urlsafe(32)
         exp_time = (datetime.utcnow() + timedelta(minutes=expires_in_minutes)).isoformat()
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             cursor = conn.cursor()
             # Invalidate any existing unused OTPs for this email and purpose
             cursor.execute(
@@ -1606,7 +1623,7 @@ class DataStorage:
         """Verify an OTP code for a given email and purpose. Marks code as used if valid."""
         try:
             now_str = datetime.utcnow().isoformat()
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             cursor = conn.cursor()
             cursor.execute(
                 '''
@@ -1658,7 +1675,7 @@ class DataStorage:
             now = started_at or datetime.utcnow().isoformat()
             exp = expires_at or (datetime.utcnow() + timedelta(days=30)).isoformat()
 
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             cursor = conn.cursor()
             cursor.execute(
                 '''
@@ -1685,7 +1702,7 @@ class DataStorage:
     def get_active_subscription(self, user_id: str) -> Optional[Dict[str, Any]]:
         """Get the current active subscription for a user."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
@@ -1706,7 +1723,7 @@ class DataStorage:
     def cancel_active_subscription(self, user_id: str) -> bool:
         """Cancel an active subscription and downgrade user role to guest."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             cursor = conn.cursor()
             cursor.execute(
                 "UPDATE subscriptions SET status = 'cancelled' WHERE user_id = ? AND status = 'active'",
@@ -1723,7 +1740,7 @@ class DataStorage:
     def delete_user(self, user_id: str) -> bool:
         """Permanently delete a user account and purge all associated records."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             cursor = conn.cursor()
             cursor.execute("DELETE FROM invoices WHERE user_id = ?", (user_id,))
             cursor.execute("DELETE FROM subscriptions WHERE user_id = ?", (user_id,))
@@ -1753,7 +1770,7 @@ class DataStorage:
         """Create a payment invoice."""
         try:
             exp = expires_at or (datetime.utcnow() + timedelta(hours=2)).isoformat()
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             cursor = conn.cursor()
             cursor.execute(
                 '''
@@ -1772,7 +1789,7 @@ class DataStorage:
     def get_invoice(self, invoice_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve an invoice by ID."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM invoices WHERE invoice_id = ?', (invoice_id,))
@@ -1786,7 +1803,7 @@ class DataStorage:
     def confirm_invoice(self, invoice_id: str, tx_hash: Optional[str] = None) -> bool:
         """Mark an invoice as confirmed and automatically provision subscription."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM invoices WHERE invoice_id = ?', (invoice_id,))
@@ -1827,7 +1844,7 @@ class DataStorage:
         if not tx_hash:
             return False
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             cursor = conn.cursor()
             if exclude_invoice_id:
                 cursor.execute(
@@ -1849,7 +1866,7 @@ class DataStorage:
     def list_user_invoices(self, user_id: str) -> List[Dict[str, Any]]:
         """List all invoices for a user."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
@@ -1874,7 +1891,7 @@ class DataStorage:
         try:
             if not self.use_db:
                 return []
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
@@ -1935,7 +1952,7 @@ class DataStorage:
             enc_secret = encrypt_exchange_secret(clean_secret)
             enc_passphrase = encrypt_exchange_secret(passphrase.strip()) if passphrase else None
             
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             cursor = conn.cursor()
             
             # Deactivate previous active keys for the same exchange & testnet mode
@@ -1994,7 +2011,7 @@ class DataStorage:
         try:
             if not self.use_db:
                 return []
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
@@ -2025,7 +2042,7 @@ class DataStorage:
         try:
             if not self.use_db:
                 return None
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
@@ -2062,7 +2079,7 @@ class DataStorage:
         try:
             if not self.use_db:
                 return False
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             cursor = conn.cursor()
             cursor.execute(
                 'DELETE FROM user_exchange_keys WHERE id = ? AND user_id = ?',
@@ -2083,7 +2100,7 @@ class DataStorage:
         try:
             if not self.use_db:
                 return False
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             cursor = conn.cursor()
             cursor.execute(
                 '''
@@ -2107,7 +2124,7 @@ class DataStorage:
         try:
             if not self.use_db:
                 return False
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             cursor = conn.cursor()
             cursor.execute(
                 '''
@@ -2133,30 +2150,28 @@ class DataStorage:
         """
         try:
             clean_exchange = str(exchange or "").strip().lower()
-            if not self.use_db:
-                return None
+            if self.use_db:
+                conn = self._get_connection()
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''
+                    SELECT * FROM user_exchange_keys
+                    WHERE user_id = ? AND LOWER(exchange) = ? AND is_active = 1
+                    ORDER BY updated_at DESC LIMIT 1
+                    ''',
+                    (user_id, clean_exchange)
+                )
+                row = cursor.fetchone()
+                conn.close()
 
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute(
-                '''
-                SELECT * FROM user_exchange_keys
-                WHERE user_id = ? AND LOWER(exchange) = ? AND is_active = 1
-                ORDER BY updated_at DESC LIMIT 1
-                ''',
-                (user_id, clean_exchange)
-            )
-            row = cursor.fetchone()
-            conn.close()
-
-            if row:
-                data = dict(row)
-                data["api_key_decrypted"] = decrypt_exchange_secret(data.get("api_key_encrypted", ""))
-                data["api_secret_decrypted"] = decrypt_exchange_secret(data.get("api_secret_encrypted", ""))
-                if data.get("passphrase_encrypted"):
-                    data["passphrase_decrypted"] = decrypt_exchange_secret(data["passphrase_encrypted"])
-                return data
+                if row:
+                    data = dict(row)
+                    data["api_key_decrypted"] = decrypt_exchange_secret(data.get("api_key_encrypted", ""))
+                    data["api_secret_decrypted"] = decrypt_exchange_secret(data.get("api_secret_encrypted", ""))
+                    if data.get("passphrase_encrypted"):
+                        data["passphrase_decrypted"] = decrypt_exchange_secret(data["passphrase_encrypted"])
+                    return data
 
             # Check environment fallback if user is admin or master configured
             if clean_exchange == "binance":
@@ -2180,6 +2195,19 @@ class DataStorage:
                         "api_key_decrypted": k,
                         "api_secret_decrypted": s,
                         "is_testnet": os.getenv("USE_TESTNET", "true").lower() == "true",
+                    }
+            elif clean_exchange == "bitget":
+                k = os.getenv("BITGET_API_KEY", "")
+                s = os.getenv("BITGET_API_SECRET", "")
+                p = os.getenv("BITGET_API_PASSPHRASE", "")
+                if k and s:
+                    return {
+                        "user_id": user_id,
+                        "exchange": "bitget",
+                        "api_key_decrypted": k,
+                        "api_secret_decrypted": s,
+                        "passphrase_decrypted": p,
+                        "is_testnet": os.getenv("BITGET_USE_TESTNET", os.getenv("USE_TESTNET", "false")).lower() == "true",
                     }
 
             return None
@@ -2205,7 +2233,7 @@ class DataStorage:
             clean_network = str(network or "BSC").strip().upper()
             clean_addr = str(deposit_address or "").strip()
 
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             cursor = conn.cursor()
             cursor.execute(
                 '''
@@ -2243,7 +2271,7 @@ class DataStorage:
         try:
             if not self.use_db:
                 return []
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -2281,7 +2309,7 @@ class DataStorage:
         try:
             if not self.use_db:
                 return None
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             clean_exchange = str(exchange or "").strip().lower()
@@ -2333,7 +2361,7 @@ class DataStorage:
         try:
             if not self.use_db:
                 return default_settings
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM user_risk_settings WHERE user_id = ?', (user_id,))
@@ -2357,7 +2385,7 @@ class DataStorage:
         try:
             if not self.use_db:
                 return False
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO user_risk_settings (
@@ -2404,7 +2432,7 @@ class DataStorage:
         try:
             if not self.use_db:
                 return False
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO user_risk_settings (
@@ -2428,7 +2456,7 @@ class DataStorage:
         try:
             if not self.use_db:
                 return False
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_connection()
             cursor = conn.cursor()
             cursor.execute('SELECT risk_consent_accepted FROM user_risk_settings WHERE user_id = ?', (user_id,))
             row = cursor.fetchone()

@@ -287,6 +287,10 @@ class TanzaniaPaymentService:
                     client = ccxt_async.bybit(client_config)
                     if is_testnet:
                         client.set_sandbox_mode(True)
+                elif clean_exchange == "bitget":
+                    client = ccxt_async.bitget(client_config)
+                    if is_testnet:
+                        client.set_sandbox_mode(True)
 
                 if client:
                     try:
@@ -899,11 +903,36 @@ class TanzaniaPaymentService:
                         "5. Click 'Payment Completed' on Bybit.",
                         "6. Move USDT from 'Funding Account' to 'Unified Trading Account (UTA)' for SnartCrypto AI trading!",
                     ]
+                },
+                {
+                    "name": "Bitget",
+                    "code": "bitget",
+                    "badge": "Top Derivatives • 0% P2P Fee",
+                    "deep_link_mpesa": "https://p2p.bitget.com/fiat/trade/buy?fiat=TZS&crypto=USDT",
+                    "deep_link_tigo": "https://p2p.bitget.com/fiat/trade/buy?fiat=TZS&crypto=USDT",
+                    "deep_link_all": "https://p2p.bitget.com/fiat/trade/buy?fiat=TZS&crypto=USDT",
+                    "fee": "0% for buyers",
+                    "steps_swahili": [
+                        "1. Fungua Bitget P2P na uchague sarafu ya TZS.",
+                        "2. Chagua 'Buy USDT' na njia yako ya malipo (M-Pesa, Tigo Pesa, Airtel Money).",
+                        "3. Chagua mfanyabiashara mwenye alama nzuri ya mauzo (98%+).",
+                        "4. Fanya malipo kwa namba yake ya simu.",
+                        "5. Bonyeza 'Paid, next' kwenye Bitget.",
+                        "6. USDT zikifika, zihamishe kwenda kwenye 'Futures Account' ili SnartCrypto AI ianze kutekeleza biashara!",
+                    ],
+                    "steps_english": [
+                        "1. Open Bitget P2P and select TZS currency.",
+                        "2. Select 'Buy USDT' and choose your preferred mobile money method.",
+                        "3. Pick a verified merchant with 98%+ completion score.",
+                        "4. Send money to the merchant's phone number.",
+                        "5. Click 'Paid, next' on Bitget.",
+                        "6. Transfer USDT to 'USDT-M Futures Account' for automated AI execution!",
+                    ]
                 }
             ],
             "anti_scam_checklist": [
                 "🛡️ Kamwe usitoe PIN yako ya M-Pesa kwa mtu yeyote kwenye chat.",
-                "🛡️ Hakikisha jina la mpokeaji wa M-Pesa linafanana na jina lililoonyeshwa kwenye Binance/Bybit.",
+                "🛡️ Hakikisha jina la mpokeaji wa M-Pesa linafanana na jina lililoonyeshwa kwenye Binance/Bybit/Bitget.",
                 "🛡️ Kamwe usikubali kughairi oda baada ya kutuma pesa.",
                 "🛡️ Wasiliana na msaada wa SnartCrypto au Exchange endapo utapata shida yoyote."
             ]

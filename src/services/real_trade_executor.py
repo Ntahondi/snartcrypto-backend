@@ -89,6 +89,7 @@ class RealTradeExecutor:
     SUPPORTED_EXCHANGES = (
         "BINANCE",
         "BYBIT",
+        "BITGET",
     )
 
     DEFAULT_LEVERAGE = 3
@@ -144,6 +145,14 @@ class RealTradeExecutor:
             getattr(
                 self.settings,
                 "ENABLE_BYBIT",
+                True,
+            )
+        )
+
+        self.enable_bitget = bool(
+            getattr(
+                self.settings,
+                "ENABLE_BITGET",
                 True,
             )
         )
@@ -205,6 +214,7 @@ class RealTradeExecutor:
 
         self.binance_exchange = None
         self.bybit_exchange = None
+        self.bitget_exchange = None
 
         self.is_initialized = False
 
@@ -349,6 +359,42 @@ class RealTradeExecutor:
                     )
 
                     self.bybit_exchange = None
+
+            # -------------------------------------------------
+            # Bitget
+            # -------------------------------------------------
+
+            if self.enable_bitget:
+
+                try:
+
+                    exchange = (
+                        await self._create_bitget()
+                    )
+
+                    if exchange:
+
+                        self.bitget_exchange = (
+                            exchange
+                        )
+
+                        successful.append(
+                            "BITGET"
+                        )
+
+                except Exception as exc:
+
+                    logger.error(
+                        "❌ Bitget initialization "
+                        f"failed: {exc}",
+                        exc_info=True,
+                    )
+
+                    await self._safe_close_exchange(
+                        self.bitget_exchange
+                    )
+
+                    self.bitget_exchange = None
 
             self.is_initialized = bool(
                 successful
@@ -527,6 +573,87 @@ class RealTradeExecutor:
 
             logger.info(
                 "✅ Bybit USDT Linear Futures connection established."
+            )
+
+            return exchange
+
+        except Exception:
+            await self._safe_close_exchange(exchange)
+            raise
+
+    async def _create_bitget(self):
+        """Create and initialize Bitget USDT-M Futures."""
+
+        api_key = str(
+            getattr(
+                self.settings,
+                "BITGET_API_KEY",
+                "",
+            )
+            or ""
+        ).strip()
+
+        api_secret = str(
+            getattr(
+                self.settings,
+                "BITGET_API_SECRET",
+                "",
+            )
+            or ""
+        ).strip()
+
+        api_passphrase = str(
+            getattr(
+                self.settings,
+                "BITGET_API_PASSPHRASE",
+                "",
+            )
+            or ""
+        ).strip()
+
+        if not api_key or not api_secret or not api_passphrase:
+            logger.warning(
+                "⚠️ Bitget API credentials (apiKey, secret, passphrase) are incomplete."
+            )
+            return None
+
+        bitget_config = {
+            "apiKey": api_key,
+            "secret": api_secret,
+            "password": api_passphrase,
+            "enableRateLimit": True,
+            "options": {
+                "defaultType": "swap",
+                "adjustForTimeDifference": True,
+                "recvWindow": 20000,
+                "fetchCurrencies": False,
+            },
+        }
+
+        proxy_url = getattr(self.settings, "EXCHANGE_PROXY_URL", None)
+        if proxy_url:
+            bitget_config["aiohttp_proxy"] = proxy_url
+
+        exchange = ccxt.bitget(bitget_config)
+        exchange.has['fetchCurrencies'] = False
+
+        try:
+            bitget_testnet = getattr(self.settings, "BITGET_USE_TESTNET", None)
+            use_testnet = self.use_testnet if bitget_testnet is None else bitget_testnet
+
+            if use_testnet:
+                exchange.set_sandbox_mode(True)
+
+            try:
+                await exchange.load_time_difference()
+            except Exception as e:
+                logger.debug(f"Bitget time sync fallback: {e}")
+
+            await exchange.load_markets()
+            await exchange.fetch_balance()
+
+            logger.info(
+                "✅ Bitget USDT-M Futures connection established."
             )
 
             return exchange
@@ -1830,6 +1957,12 @@ class RealTradeExecutor:
                 "orderLinkId"
             ] = client_order_id
 
+        elif exchange_name == "BITGET":
+
+            entry_params[
+                "clientOid"
+            ] = client_order_id
+
         entry_order = None
 
         for attempt in range(
@@ -2633,6 +2766,16 @@ class RealTradeExecutor:
                     )
                 )
 
+            if self.bitget_exchange:
+
+                tasks.append(
+                    self._execute_single_exchange_open(
+                        self.bitget_exchange,
+                        "BITGET",
+                        position,
+                    )
+                )
+
             if not tasks:
 
                 return {
@@ -2812,6 +2955,17 @@ class RealTradeExecutor:
                     self._execute_single_exchange_close(
                         self.bybit_exchange,
                         "BYBIT",
+                        position,
+                        reason,
+                    )
+                )
+
+            if self.bitget_exchange:
+
+                tasks.append(
+                    self._execute_single_exchange_close(
+                        self.bitget_exchange,
+                        "BITGET",
                         position,
                         reason,
                     )
@@ -3142,6 +3296,9 @@ class RealTradeExecutor:
         if name == "BYBIT":
             return self.bybit_exchange
 
+        if name == "BITGET":
+            return self.bitget_exchange
+
         return None
 
     # =========================================================
@@ -3244,6 +3401,15 @@ class RealTradeExecutor:
             tasks["BYBIT"] = (
                 self.get_balance(
                     "BYBIT",
+                    currency,
+                )
+            )
+
+        if self.bitget_exchange:
+
+            tasks["BITGET"] = (
+                self.get_balance(
+                    "BITGET",
                     currency,
                 )
             )
@@ -3607,6 +3773,9 @@ class RealTradeExecutor:
         if self.bybit_exchange:
             names.append("BYBIT")
 
+        if self.bitget_exchange:
+            names.append("BITGET")
+
         if not names:
 
             return {
@@ -3860,6 +4029,9 @@ class RealTradeExecutor:
             "bybit_connected": bool(
                 self.bybit_exchange
             ),
+            "bitget_connected": bool(
+                self.bitget_exchange
+            ),
             "leverage": self.leverage,
             "margin_type": self.margin_type,
             "active_symbols": list(
@@ -3915,6 +4087,10 @@ class RealTradeExecutor:
                 "BYBIT",
                 self.bybit_exchange,
             ),
+            (
+                "BITGET",
+                self.bitget_exchange,
+            ),
         ]
 
         for name, exchange in exchanges:
@@ -3940,6 +4116,7 @@ class RealTradeExecutor:
 
         self.binance_exchange = None
         self.bybit_exchange = None
+        self.bitget_exchange = None
 
         self.is_initialized = False
         self._closed = True

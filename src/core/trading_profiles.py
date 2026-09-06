@@ -118,9 +118,9 @@ class TradingProfile:
     signal_timeframe: SignalTimeframe = SignalTimeframe.H1
 
     max_positions_per_symbol: int = 1
-    max_total_positions: int = 10
+    max_total_positions: int = 4
 
-    position_size_pct: float = 0.08
+    position_size_pct: float = 0.20
     max_holding_hours: int = 8
 
     # ------------------------------------------------------------------------
@@ -932,9 +932,9 @@ def get_profile_scalper() -> TradingProfile:
         signal_timeframe=SignalTimeframe.H1,
 
         max_positions_per_symbol=1,
-        max_total_positions=9,
+        max_total_positions=4,
 
-        position_size_pct=0.05,
+        position_size_pct=0.20,
         max_holding_hours=2,
 
         min_confidence=0.55,
@@ -1013,9 +1013,9 @@ def get_profile_day_trader() -> TradingProfile:
         signal_timeframe=SignalTimeframe.H1,
 
         max_positions_per_symbol=1,
-        max_total_positions=9,
+        max_total_positions=4,
 
-        position_size_pct=0.10,
+        position_size_pct=0.20,
         max_holding_hours=8,
 
         min_confidence=0.55,
@@ -1094,9 +1094,9 @@ def get_profile_swing() -> TradingProfile:
         signal_timeframe=SignalTimeframe.H4,
 
         max_positions_per_symbol=1,
-        max_total_positions=5,
+        max_total_positions=4,
 
-        position_size_pct=0.12,
+        position_size_pct=0.20,
         max_holding_hours=24,
 
         min_confidence=0.50,

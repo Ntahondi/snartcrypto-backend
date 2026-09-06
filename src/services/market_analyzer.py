@@ -167,6 +167,11 @@ class MarketAnalyzer:
         # Global data lock for market_data modifications.
         self._data_lock = asyncio.Lock()
 
+        # Micro-batch staging buffer for multi-symbol signal ranking
+        self._signal_staging_buffer: List[Dict[str, Any]] = []
+        self._staging_lock = asyncio.Lock()
+        self._batch_flush_task: Optional[asyncio.Task] = None
+
         # Tasks owned by this analyzer.
         self._tasks: Dict[str, asyncio.Task] = {}
 
@@ -1205,33 +1210,178 @@ class MarketAnalyzer:
         signal: Dict,
     ) -> None:
         """
-        Process an incoming candidate signal.
+        Stage an incoming candidate signal into the micro-batch aggregation buffer.
 
-        Order of operations:
-            1. Portfolio risk & profile gate check
-            2. If rejected and not 'test' profile:
-               -> Skip persistence, skip telegram, skip position
-            3. If approved (or 'test' profile):
-               -> Save to signals.db & HistoryManager
-               -> Update self.latest_signals
-               -> Broadcast to Telegram VIP Channel
-               -> Open position in PortfolioManager & live manager
+        Eliminates the FCFS (First-Come, First-Served) latency race where lower-confidence
+        signals arriving milliseconds earlier consume capital before higher-conviction signals arrive.
+        All candidate signals arriving within the staging window (default 3.0s) are aggregated,
+        ranked by Composite Conviction Score, and executed in order of quality.
         """
+        symbol = signal.get(
+            "symbol",
+            "UNKNOWN",
+        )
 
+        async with self._staging_lock:
+            # Deduplicate within staging buffer: if same symbol already buffered, keep latest
+            self._signal_staging_buffer = [
+                s for s in self._signal_staging_buffer
+                if s.get("symbol") != symbol
+            ]
+            self._signal_staging_buffer.append(signal)
+
+            # Start flush task if not currently running
+            if self._batch_flush_task is None or self._batch_flush_task.done():
+                self._batch_flush_task = asyncio.create_task(
+                    self._wait_and_flush_signal_batch()
+                )
+
+    async def _wait_and_flush_signal_batch(self) -> None:
+        """
+        Wait for the micro-batch staging window to gather simultaneous candle signals,
+        then flush and execute candidate signals in order of Conviction Score.
+        """
+        window = float(getattr(self.settings, "SIGNAL_BATCH_WINDOW_SECONDS", 3.0))
+        await asyncio.sleep(window)
+
+        async with self._staging_lock:
+            batch = list(self._signal_staging_buffer)
+            self._signal_staging_buffer.clear()
+
+        if not batch:
+            return
+
+        await self._process_signal_batch(batch)
+
+    def _calculate_conviction_score(self, signal: Dict) -> float:
+        """
+        Calculate Composite Conviction Score to rank signals for capital allocation.
+
+        Formula:
+            Score = (Confidence * 100)
+                  * (1.0 + 0.30 * Ensemble Agreement)
+                  * min(Risk-to-Reward, 3.5)
+                  * (1.0 + min(Expected Return * 10, 1.0))
+                  * (1.15 if Strong Model 4 Institutional Setup else 1.0)
+        """
+        confidence = float(signal.get("confidence", 0.0) or 0.0)
+        expected_return = abs(float(signal.get("expected_return", 0.0) or 0.0))
+
+        # Risk to reward ratio
+        rr_ratio = 1.5
+        strategy = signal.get("strategy") or {}
+        if isinstance(strategy, dict):
+            rr_val = strategy.get("risk_reward_ratio") or strategy.get("risk_reward")
+            if rr_val is not None:
+                try:
+                    rr_ratio = float(rr_val)
+                except (ValueError, TypeError):
+                    pass
+
+        # Ensemble agreement ratio (e.g. 4/4 or 3/4)
+        votes = signal.get("votes") or {}
+        agreement_ratio = 0.5
+        if isinstance(votes, dict):
+            majority_text = str(votes.get("majority", "2/4"))
+            if "/" in majority_text:
+                try:
+                    parts = majority_text.split("/")
+                    agreement_ratio = float(parts[0]) / max(1.0, float(parts[1]))
+                except Exception:
+                    pass
+
+        # Model 4 Institutional Patterns Bonus (Liquidity Sweep, Volatility Squeeze, Order Book Imbalance)
+        m4_strats = signal.get("model4_strategies") or {}
+        has_m4_strong = False
+        if isinstance(m4_strats, dict):
+            for strat_name, strat_data in m4_strats.items():
+                prob = float(strat_data.get("probability", 0.0) or 0.0) if isinstance(strat_data, dict) else 0.0
+                if prob >= 0.70:
+                    has_m4_strong = True
+                    break
+
+        score = (confidence * 100.0)
+        score *= (1.0 + 0.30 * agreement_ratio)
+        score *= min(max(rr_ratio, 1.0), 3.5)
+        score *= (1.0 + min(expected_return * 10.0, 1.0))
+        if has_m4_strong:
+            score *= 1.15
+
+        return round(score, 2)
+
+    async def _process_signal_batch(self, batch: List[Dict]) -> None:
+        """
+        Rank candidate signals by conviction score and execute the top opportunities
+        up to the maximum concurrent positions target (3-4 positions).
+        """
+        if not self.portfolio_manager:
+            self.logger.warning("⚠️ PortfolioManager unavailable. Batch execution skipped.")
+            return
+
+        # Rank signals descending by conviction score
+        ranked_batch = sorted(
+            batch,
+            key=lambda s: self._calculate_conviction_score(s),
+            reverse=True,
+        )
+
+        target_max_positions = int(getattr(self.settings, "MAX_TARGET_POSITIONS", 4))
+        active_positions = self.portfolio_manager.get_open_positions() if hasattr(self.portfolio_manager, "get_open_positions") else self.portfolio_manager.open_positions
+        current_open_count = len(active_positions)
+        available_slots = max(0, target_max_positions - current_open_count)
+
+        self.logger.info(
+            f"📊 [Micro-Batch Staging] Processing {len(ranked_batch)} candidate signals. "
+            f"Active positions: {current_open_count}/{target_max_positions}. Available slots: {available_slots}"
+        )
+
+        for rank, signal in enumerate(ranked_batch, 1):
+            sym = signal.get("symbol", "UNKNOWN")
+            score = self._calculate_conviction_score(signal)
+            conf = float(signal.get("confidence", 0.0) or 0.0)
+
+            # Check if we still have available position slots
+            if available_slots <= 0:
+                self.logger.info(
+                    f"⏭️ [Micro-Batch Staging] {sym} ranked #{rank} (Conviction: {score:.1f}, Conf: {conf:.1%}) "
+                    f"SKIPPED: Target positions ({target_max_positions}) reserved for higher-conviction setups."
+                )
+                # Keep latest signals updated for frontend/analytics
+                self.latest_signals[sym] = signal
+                await self._save_signal_safely(signal)
+                continue
+
+            # Check available capital before executing
+            min_alloc = self.portfolio_manager.initial_capital * self.portfolio_manager.DEFAULT_MIN_ALLOCATION_PCT
+            if self.portfolio_manager.available_capital < min_alloc:
+                self.logger.info(
+                    f"⏭️ [Micro-Batch Staging] {sym} ranked #{rank} (Conviction: {score:.1f}) "
+                    f"SKIPPED: Available capital (${self.portfolio_manager.available_capital:.2f}) depleted."
+                )
+                self.latest_signals[sym] = signal
+                await self._save_signal_safely(signal)
+                continue
+
+            # Execute the candidate signal
+            opened = await self._execute_single_signal(signal, rank=rank, score=score)
+            if opened:
+                available_slots -= 1
+
+    async def _execute_single_signal(
+        self,
+        signal: Dict,
+        rank: int = 1,
+        score: float = 0.0,
+    ) -> bool:
+        """
+        Execute an approved high-conviction candidate signal into PortfolioManager.
+        """
         symbol = signal.get(
             "symbol",
             "UNKNOWN",
         )
 
         try:
-            if not self.portfolio_manager:
-                self.logger.warning(
-                    f"⚠️ Signal generated for {symbol}, "
-                    "but PortfolioManager is unavailable. "
-                    "No position opened."
-                )
-                return
-
             profile = getattr(self.portfolio_manager, "profile", None)
             profile_name = str(getattr(profile, "name", getattr(self.settings, "TRADING_PROFILE", "day_trader"))).lower()
             is_test_profile = profile_name == "test"
@@ -1274,14 +1424,17 @@ class MarketAnalyzer:
                     "❌ PortfolioManager does not expose "
                     "should_open_position(). Signal rejected."
                 )
-                return
+                return False
 
             if not should_trade and not is_test_profile:
                 self.logger.info(
-                    f"⏭️ [Profile Filter] Signal for {symbol} rejected by '{profile_name}' criteria: "
+                    f"⏭️ [Profile Filter] Signal for {symbol} (Rank #{rank}, Score: {score:.1f}) rejected by '{profile_name}': "
                     f"{reason}"
                 )
-                return
+                # Keep latest signals updated
+                self.latest_signals[symbol] = signal
+                await self._save_signal_safely(signal)
+                return False
 
             # -----------------------------------------------------
             # Signal APPROVED: Persist, Update Latest, Broadcast, & Open
@@ -1329,7 +1482,7 @@ class MarketAnalyzer:
                 )
 
                 self.logger.info(
-                    f"💰 PORTFOLIO POSITION OPENED | "
+                    f"💰 PORTFOLIO POSITION OPENED (Rank #{rank}, Score: {score:.1f}) | "
                     f"{symbol} | "
                     f"{action} | "
                     f"Entry: ${float(entry_price):.6f}"
@@ -1341,18 +1494,21 @@ class MarketAnalyzer:
                 except Exception as lpm_err:
                     self.logger.debug(f"Live position manager sync pass: {lpm_err}")
 
+                return True
+
             else:
                 self.logger.info(
                     f"⏭️ Portfolio did not open position "
                     f"for {symbol} after approval."
                 )
+                return False
 
         except Exception as exc:
             self.logger.error(
-                f"❌ Signal handling failed "
-                f"for {symbol}: {exc}",
+                f"❌ Error executing signal for {symbol}: {exc}",
                 exc_info=True,
             )
+            return False
 
     # =============================================================
     # TELEGRAM / HISTORY SAFE OPERATIONS

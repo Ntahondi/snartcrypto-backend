@@ -1342,15 +1342,153 @@ class BybitDataCollector:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# BITGET FALLBACK DATA COLLECTOR
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+class BitgetDataCollector:
+    """
+    Bitget public market data collector.
+    Serves as an automatic tertiary fallback when Binance and Bybit endpoints are unreachable.
+    """
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.base_url = "https://api.bitget.com"
+        self.session: Optional[aiohttp.ClientSession] = None
+
+    async def get_session(self) -> aiohttp.ClientSession:
+        if self.session is None or self.session.closed:
+            timeout = aiohttp.ClientTimeout(total=20, connect=8)
+            self.session = aiohttp.ClientSession(timeout=timeout)
+        return self.session
+
+    async def close(self) -> None:
+        try:
+            if self.session and not self.session.closed:
+                await self.session.close()
+            self.session = None
+        except Exception:
+            pass
+
+    @staticmethod
+    def to_bitget_symbol(symbol: str) -> str:
+        return symbol.upper().replace("/", "").replace(":USDT", "").replace(":USDC", "").strip()
+
+    async def fetch_historical_data(
+        self,
+        symbol: str,
+        interval: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> Optional[pd.DataFrame]:
+        interval = interval or getattr(self.settings, "DEFAULT_INTERVAL", "1h")
+        limit = limit or getattr(self.settings, "DEFAULT_LIMIT", 500)
+        bitget_symbol = self.to_bitget_symbol(symbol)
+
+        bitget_intervals = {
+            "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
+            "1h": "1H", "2h": "2H", "4h": "4H", "6h": "6H", "12h": "12H",
+            "1d": "1D", "1w": "1W",
+        }
+        granularity = bitget_intervals.get(interval.lower(), "1H")
+
+        url = f"{self.base_url}/api/v2/mix/market/candles"
+        params = {
+            "symbol": bitget_symbol,
+            "granularity": granularity,
+            "limit": str(min(limit, 1000)),
+            "productType": "USDT-FUTURES",
+        }
+        try:
+            session = await self.get_session()
+            async with session.get(url, params=params) as resp:
+                if resp.status == 200:
+                    payload = await resp.json()
+                    candles = payload.get("data", [])
+                    if candles:
+                        df = pd.DataFrame(
+                            candles,
+                            columns=["timestamp", "open", "high", "low", "close", "volume", "quote_volume"]
+                        )
+                        df["timestamp"] = pd.to_datetime(pd.to_numeric(df["timestamp"]), unit="ms")
+                        for col in ["open", "high", "low", "close", "volume"]:
+                            df[col] = df[col].astype(float)
+                        df.sort_values("timestamp", inplace=True)
+                        df.reset_index(drop=True, inplace=True)
+                        return df
+        except Exception as exc:
+            logger.warning(f"Bitget klines failed for {bitget_symbol}: {exc}")
+        return None
+
+    async def fetch_ticker(self, symbol: str) -> Optional[Dict[str, float]]:
+        bitget_symbol = self.to_bitget_symbol(symbol)
+        url = f"{self.base_url}/api/v2/mix/market/ticker"
+        params = {"symbol": bitget_symbol, "productType": "USDT-FUTURES"}
+        try:
+            session = await self.get_session()
+            async with session.get(url, params=params) as resp:
+                if resp.status == 200:
+                    payload = await resp.json()
+                    items = payload.get("data", [])
+                    if items:
+                        item = items[0]
+                        last_price = float(item.get("lastPr", 0.0) or 0.0)
+                        funding_rate = float(item.get("fundingRate", 0.0) or 0.0)
+                        open_interest = float(item.get("openInterest", 0.0) or 0.0)
+                        best_bid = float(item.get("bidPr", 0.0) or 0.0)
+                        best_ask = float(item.get("askPr", 0.0) or 0.0)
+                        spread_pct = ((best_ask - best_bid) / last_price) if (last_price > 0 and best_ask >= best_bid) else 0.0
+                        return {
+                            "last_price": last_price,
+                            "funding_rate": funding_rate,
+                            "open_interest": open_interest,
+                            "open_interest_usd": open_interest * last_price,
+                            "best_bid": best_bid,
+                            "best_ask": best_ask,
+                            "spread_pct": spread_pct,
+                        }
+        except Exception as exc:
+            logger.warning(f"Bitget ticker fetch failed for {bitget_symbol}: {exc}")
+        return None
+
+    async def fetch_complete_data(
+        self,
+        symbol: str,
+        interval: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> Optional[pd.DataFrame]:
+        df = await self.fetch_historical_data(symbol, interval, limit)
+        if df is None or df.empty:
+            return None
+        ticker = await self.fetch_ticker(symbol)
+        if ticker:
+            df["funding_rate"] = ticker["funding_rate"]
+            df["funding_rate_annualized"] = ticker["funding_rate"] * 3 * 365
+            df["open_interest"] = ticker["open_interest"]
+            df["open_interest_usd"] = ticker["open_interest_usd"]
+            df["spread_pct"] = ticker["spread_pct"]
+            df["best_bid"] = ticker["best_bid"]
+            df["best_ask"] = ticker["best_ask"]
+        else:
+            df["funding_rate"] = 0.0
+            df["funding_rate_annualized"] = 0.0
+            df["open_interest"] = 0.0
+            df["open_interest_usd"] = 0.0
+            df["spread_pct"] = 0.0
+        df["order_imbalance"] = 0.0
+        df["buy_pressure"] = 0.5
+        return df
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # MULTI-EXCHANGE COLLECTOR
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
 class MultiExchangeCollector:
     """
-    Exchange abstraction with fallback support.
+    Exchange abstraction with multi-tier fallback support.
 
-    Binance remains the primary source, with Bybit as automatic secondary fallback.
+    Binance is primary, Bybit is secondary, and Bitget is tertiary fallback.
     """
 
     def __init__(
@@ -1364,6 +1502,9 @@ class MultiExchangeCollector:
                 settings
             ),
             "bybit": BybitDataCollector(
+                settings
+            ),
+            "bitget": BitgetDataCollector(
                 settings
             ),
         }

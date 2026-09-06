@@ -365,6 +365,7 @@ async def root():
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # SYSTEM STATUS ENDPOINT
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+@app.get("/api/v1/system-status")
 @app.get("/system-status")
 async def system_status():
     """Comprehensive system status with all components"""
@@ -540,6 +541,7 @@ async def run_backtest(symbol: str, days: int = 30):
 # TRAINING MANAGEMENT ENDPOINTS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 @app.get("/api/v1/training/status")
+@app.get("/training/status")
 async def training_status_endpoint():
     """Get model training status"""
     global market_analyzer_instance
@@ -551,6 +553,10 @@ async def training_status_endpoint():
 
 @app.post(
     "/api/v1/retrain",
+    dependencies=[Depends(verify_snailguard_request_shield)],
+)
+@app.post(
+    "/retrain",
     dependencies=[Depends(verify_snailguard_request_shield)],
 )
 async def trigger_training(force: bool = False):

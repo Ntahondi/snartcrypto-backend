@@ -159,8 +159,8 @@ class PortfolioManager:
 
     VERSION = "3.1.0"
 
-    # Safety ceiling matching the 9 monitored crypto symbols.
-    MAX_POSITIONS_HARD_CAP = 9
+    # Safety ceiling: target 3 to 4 concurrent positions for balanced capital allocation.
+    MAX_POSITIONS_HARD_CAP = 4
 
     DEFAULT_MIN_ALLOCATION_PCT = 0.01
 
@@ -1183,7 +1183,7 @@ class PortfolioManager:
                 self._safe_float(
                     signal.get(
                         "signal_strength",
-                        0.0,
+                        signal.get("strength", 0.0),
                     ),
                     0.0,
                 ),
@@ -1569,11 +1569,13 @@ class PortfolioManager:
 
         profile_max_positions = self._profile_int(
             "max_total_positions",
-            10,
+            4,
         )
 
+        settings_cap = int(getattr(getattr(self, "settings", None) or get_settings(), "MAX_TARGET_POSITIONS", self.MAX_POSITIONS_HARD_CAP))
         max_positions = min(
             profile_max_positions,
+            settings_cap,
             self.MAX_POSITIONS_HARD_CAP,
         )
 

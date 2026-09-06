@@ -450,6 +450,36 @@ class Settings(BaseSettings):
         description="Override testnet mode specifically for Bybit.",
     )
 
+    ENABLE_BITGET: bool = Field(
+        default=True,
+        description="Enable Bitget exchange execution.",
+    )
+
+    BITGET_API_KEY: str = Field(
+        default="",
+        description="Bitget API key.",
+    )
+
+    BITGET_API_SECRET: str = Field(
+        default="",
+        description="Bitget API secret.",
+    )
+
+    BITGET_API_PASSPHRASE: str = Field(
+        default="",
+        description="Bitget API passphrase.",
+    )
+
+    BITGET_API_BASE: str = Field(
+        default="https://api.bitget.com",
+        description="Bitget REST API base URL.",
+    )
+
+    BITGET_USE_TESTNET: Optional[bool] = Field(
+        default=None,
+        description="Override testnet mode specifically for Bitget.",
+    )
+
     EXCHANGE_PROXY_URL: Optional[str] = Field(
         default=None,
         description="Optional HTTP/SOCKS proxy for exchange API requests.",
@@ -464,6 +494,20 @@ class Settings(BaseSettings):
     MARGIN_TYPE: str = Field(
         default="ISOLATED",
         description="Default futures margin mode.",
+    )
+
+    SIGNAL_BATCH_WINDOW_SECONDS: float = Field(
+        default=3.0,
+        ge=0.5,
+        le=15.0,
+        description="Aggregation window in seconds for micro-batch signal conviction ranking.",
+    )
+
+    MAX_TARGET_POSITIONS: int = Field(
+        default=4,
+        ge=1,
+        le=9,
+        description="Maximum concurrent open positions allowed (target 3-4 positions).",
     )
 
     # ------------------------------------------------------------------------
@@ -526,6 +570,10 @@ class Settings(BaseSettings):
         default_factory=lambda: [
             "BTCUSDT",
             "ETHUSDT",
+            "BNBUSDT",
+            "XRPUSDT",
+            "DOGEUSDT",
+            "AVAXUSDT",
             "ADAUSDT",
             "LINKUSDT",
             "SOLUSDT",
@@ -1363,7 +1411,6 @@ def validate_settings(
 
     valid_margin_types = {
         "ISOLATED",
-        "CROSSED",
     }
 
     if settings.MARGIN_TYPE.upper() not in valid_margin_types:
