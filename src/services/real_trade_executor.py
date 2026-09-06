@@ -1557,6 +1557,10 @@ class RealTradeExecutor:
             None,
         )
 
+        if exchange_name == "BITGET":
+            primary_params["oneWayMode"] = True
+            primary_params["tradeSide"] = "open"
+
         # -----------------------------------------------------
         # First attempt: unified CCXT trigger order.
         # -----------------------------------------------------
@@ -1608,6 +1612,10 @@ class RealTradeExecutor:
                 "stopPrice": trigger,
                 "reduceOnly": True,
             }
+
+            if exchange_name == "BITGET":
+                fallback_params["oneWayMode"] = True
+                fallback_params["tradeSide"] = "open"
 
             order = await asyncio.wait_for(
                 exchange.create_order(
@@ -1888,6 +1896,40 @@ class RealTradeExecutor:
         )
 
         # -----------------------------------------------------
+        # Dynamic balance sizing & availability check.
+        # -----------------------------------------------------
+
+        free_usdt = await self._get_free_usdt(exchange)
+
+        if free_usdt <= 0:
+            logger.info(
+                f"ℹ️ {exchange_name}: Available balance is $0.00. "
+                f"Skipping order execution on this exchange."
+            )
+            return None
+
+        # Sizing adaptation: If the paper/requested amount requires more
+        # margin than available on this real exchange, dynamically scale
+        # the trade to fit the actual account equity (allocating ~25%
+        # of available margin per trade to support 3-4 concurrent positions).
+        notional = amount * reference_price
+        est_margin = notional / max(self.leverage, 1)
+        req_margin = est_margin * self.NOTIONAL_SLIPPAGE_BUFFER
+        available_margin = free_usdt * self.BALANCE_SAFETY_BUFFER
+
+        if req_margin > available_margin:
+            target_margin = available_margin * 0.25
+            target_notional = target_margin * max(self.leverage, 1)
+            scaled_amount = target_notional / reference_price
+
+            logger.info(
+                f"⚖️ {exchange_name}: Sizing trade to real exchange balance. "
+                f"Free=${free_usdt:.2f}, Target Margin=${target_margin:.2f} (25%), "
+                f"Notional=${target_notional:.2f}, Qty={scaled_amount:.6f}"
+            )
+            amount = scaled_amount
+
+        # -----------------------------------------------------
         # Format quantity.
         # -----------------------------------------------------
 
@@ -1900,7 +1942,7 @@ class RealTradeExecutor:
         )
 
         # -----------------------------------------------------
-        # Balance.
+        # Balance validation.
         # -----------------------------------------------------
 
         (
@@ -2373,28 +2415,13 @@ class RealTradeExecutor:
             )
         )
 
-        requested_amount = float(
-            getattr(
-                position,
-                "quantity",
-                0,
-            )
-            or 0
-        )
+        if actual_amount <= 0:
 
-        amount = (
-            actual_amount
-            if actual_amount > 0
-            else requested_amount
-        )
-
-        if amount <= 0:
-
-            logger.warning(
-                f"⚠️ {exchange_name}: "
-                f"No open exchange position "
-                f"found for "
-                f"{position.symbol}."
+            logger.info(
+                f"ℹ️ {exchange_name}: "
+                f"Position for {position.symbol} "
+                f"is already zero on exchange (contracts=0). "
+                f"No close order needed."
             )
 
             self._remove_active_exchange_order(
@@ -2417,7 +2444,7 @@ class RealTradeExecutor:
         amount = self._format_amount(
             exchange,
             symbol_ccxt,
-            amount,
+            actual_amount,
         )
 
         # -----------------------------------------------------
@@ -2425,7 +2452,6 @@ class RealTradeExecutor:
         # -----------------------------------------------------
 
         close_params: Dict[str, Any] = {
-            "reduceOnly": True,
             "marginMode": self.margin_type,
         }
 
@@ -2441,12 +2467,24 @@ class RealTradeExecutor:
             close_params[
                 "newClientOrderId"
             ] = close_client_id
+            close_params["reduceOnly"] = True
 
         elif exchange_name == "BYBIT":
 
             close_params[
                 "orderLinkId"
             ] = close_client_id
+            close_params["reduceOnly"] = True
+
+        elif exchange_name == "BITGET":
+
+            close_params[
+                "clientOid"
+            ] = close_client_id
+            # In Bitget V2 API, unilateral (one-way) position mode requires oneWayMode=True and tradeSide='open'.
+            # If tradeSide='close' is passed in unilateral mode, Bitget returns code 40774.
+            close_params["oneWayMode"] = True
+            close_params["tradeSide"] = "open"
 
         logger.info(
             f"📤 {exchange_name}: "
@@ -2455,17 +2493,112 @@ class RealTradeExecutor:
             f"reason={reason}"
         )
 
-        close_order = await asyncio.wait_for(
-            exchange.create_order(
-                symbol_ccxt,
-                "market",
-                close_side,
-                amount,
-                None,
-                close_params,
-            ),
-            timeout=self.order_timeout,
-        )
+        close_order = None
+        try:
+
+            close_order = await asyncio.wait_for(
+                exchange.create_order(
+                    symbol_ccxt,
+                    "market",
+                    close_side,
+                    amount,
+                    None,
+                    close_params,
+                ),
+                timeout=self.order_timeout,
+            )
+
+        except Exception as exc:
+
+            err_msg = str(exc)
+            err_lower = err_msg.lower()
+
+            # Bybit 110017: position is already zero
+            if "110017" in err_msg or "current position is zero" in err_lower:
+
+                logger.info(
+                    f"ℹ️ {exchange_name}: Position {position.symbol} "
+                    f"is already closed on exchange (retCode 110017)."
+                )
+
+                self._remove_active_exchange_order(
+                    position.symbol,
+                    exchange_name,
+                )
+
+                return {
+                    "exchange": exchange_name,
+                    "symbol": position.symbol,
+                    "status": "ALREADY_CLOSED",
+                    "reason": reason,
+                    "timestamp": (
+                        datetime.now(
+                            timezone.utc
+                        ).isoformat()
+                    ),
+                }
+
+            # Bitget 40774: position mode conflict (unilateral vs hedge)
+            if exchange_name == "BITGET" and "40774" in err_msg:
+
+                logger.warning(
+                    f"⚠️ {exchange_name}: Position mode conflict (40774) for {position.symbol}. "
+                    f"Retrying with hedge close parameters..."
+                )
+
+                try:
+
+                    alt_close_params = {
+                        "marginMode": self.margin_type,
+                        "clientOid": close_client_id,
+                        "tradeSide": "close",
+                        "reduceOnly": True,
+                    }
+
+                    close_order = await asyncio.wait_for(
+                        exchange.create_order(
+                            symbol_ccxt,
+                            "market",
+                            close_side,
+                            amount,
+                            None,
+                            alt_close_params,
+                        ),
+                        timeout=self.order_timeout,
+                    )
+
+                except Exception as retry_exc:
+
+                    retry_msg = str(retry_exc)
+
+                    if "40774" in retry_msg or "position is zero" in retry_msg.lower():
+
+                        logger.info(
+                            f"ℹ️ {exchange_name}: Handled as ALREADY_CLOSED after retry."
+                        )
+
+                        self._remove_active_exchange_order(
+                            position.symbol,
+                            exchange_name,
+                        )
+
+                        return {
+                            "exchange": exchange_name,
+                            "symbol": position.symbol,
+                            "status": "ALREADY_CLOSED",
+                            "reason": reason,
+                            "timestamp": (
+                                datetime.now(
+                                    timezone.utc
+                                ).isoformat()
+                            ),
+                        }
+
+                    raise retry_exc
+
+            else:
+
+                raise exc
 
         close_id = (
             close_order.get(
@@ -2625,13 +2758,20 @@ class RealTradeExecutor:
                 else "short"
             )
 
+            target_base = self._normalize_base_symbol(symbol_ccxt)
+
             for position in positions:
 
-                if (
+                pos_sym = str(
                     position.get(
-                        "symbol"
+                        "symbol",
+                        "",
                     )
-                    != symbol_ccxt
+                )
+
+                if (
+                    pos_sym != symbol_ccxt
+                    and self._normalize_base_symbol(pos_sym) != target_base
                 ):
                     continue
 
@@ -2649,6 +2789,10 @@ class RealTradeExecutor:
                     )
                     or 0
                 )
+
+                if side in ("net", "", "none"):
+                    side = "long" if contracts > 0 else "short" if contracts < 0 else ""
+                    contracts = abs(contracts)
 
                 if (
                     side == expected_side
