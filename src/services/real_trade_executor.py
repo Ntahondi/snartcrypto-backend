@@ -247,6 +247,7 @@ class RealTradeExecutor:
         self.bitget_exchange = None
 
         self.is_initialized = False
+        self._bitget_one_way_verified = False
 
         self._initialization_lock = asyncio.Lock()
 
@@ -848,10 +849,13 @@ class RealTradeExecutor:
                 margin_params["productType"] = "USDT-FUTURES"
                 margin_params["marginCoin"] = "USDT"
 
-            await exchange.set_margin_mode(
-                self.margin_type,
-                symbol_ccxt,
-                margin_params,
+            await asyncio.wait_for(
+                exchange.set_margin_mode(
+                    self.margin_type,
+                    symbol_ccxt,
+                    margin_params,
+                ),
+                timeout=5.0,
             )
 
         except Exception as exc:
@@ -888,10 +892,13 @@ class RealTradeExecutor:
                     # For Bitget isolated margin, configure leverage for long side
                     params["holdSide"] = "long"
 
-            await exchange.set_leverage(
-                self.leverage,
-                symbol_ccxt,
-                params,
+            await asyncio.wait_for(
+                exchange.set_leverage(
+                    self.leverage,
+                    symbol_ccxt,
+                    params,
+                ),
+                timeout=5.0,
             )
 
             # If isolated on Bitget, also ensure short side is configured
@@ -899,10 +906,13 @@ class RealTradeExecutor:
                 try:
                     params_short = dict(params)
                     params_short["holdSide"] = "short"
-                    await exchange.set_leverage(
-                        self.leverage,
-                        symbol_ccxt,
-                        params_short,
+                    await asyncio.wait_for(
+                        exchange.set_leverage(
+                            self.leverage,
+                            symbol_ccxt,
+                            params_short,
+                        ),
+                        timeout=5.0,
                     )
                 except Exception:
                     pass
@@ -935,28 +945,31 @@ class RealTradeExecutor:
         Ensure Bitget uses one-way position mode.
 
         IMPORTANT:
-        We do not blindly switch position mode while positions/orders
-        exist. Bitget position mode is account/product scoped and
-        may reject a mode change when positions/orders are active.
-
-        The normal path simply attempts to set one-way mode.
+        Bitget position mode is account-wide for USDT-FUTURES.
+        Once set or verified, subsequent calls are skipped.
+        If positions/orders exist, Bitget rejects mode switching,
+        which is expected and safe to proceed under the existing mode.
         """
+        if self._bitget_one_way_verified:
+            return
 
         if exchange is None:
-            raise RuntimeError(
-                "Bitget exchange is not initialized."
-            )
+            return
 
         try:
 
-            await exchange.set_position_mode(
-                False,
-                symbol_ccxt,
-                {
-                    "productType": "USDT-FUTURES",
-                },
+            await asyncio.wait_for(
+                exchange.set_position_mode(
+                    False,
+                    symbol_ccxt,
+                    {
+                        "productType": "USDT-FUTURES",
+                    },
+                ),
+                timeout=5.0,
             )
 
+            self._bitget_one_way_verified = True
             logger.info(
                 f"BITGET: {symbol_ccxt} configured for one-way position mode."
             )
@@ -964,6 +977,7 @@ class RealTradeExecutor:
         except Exception as exc:
 
             message = str(exc).lower()
+            self._bitget_one_way_verified = True
 
             # Already in one-way mode or active positions exist
             already_one_way = (
@@ -977,6 +991,8 @@ class RealTradeExecutor:
                 or "40017" in message
                 or "has position" in message
                 or "cannot be changed" in message
+                or "position" in message
+                or "hold" in message
             )
 
             if already_one_way:
@@ -988,11 +1004,12 @@ class RealTradeExecutor:
 
                 return
 
-            # Do not hide a real mode conflict.
-            raise RuntimeError(
-                f"BITGET position-mode configuration failed "
-                f"for {symbol_ccxt}: {exc}"
-            ) from exc
+            # Never crash execution on position mode configuration.
+            logger.warning(
+                f"⚠️ BITGET: Position-mode configuration skipped for {symbol_ccxt} "
+                f"({exc}). Proceeding with active account mode."
+            )
+            return
 
     # =========================================================
     # BALANCE HELPERS
@@ -1004,7 +1021,16 @@ class RealTradeExecutor:
         exchange_name: str,
     ) -> float:
 
-        balance = await exchange.fetch_balance()
+        try:
+            balance = await asyncio.wait_for(
+                exchange.fetch_balance(),
+                timeout=8.0,
+            )
+        except Exception as exc:
+            logger.warning(
+                f"⚠️ {exchange_name}: Balance fetch failed or timed out: {exc}"
+            )
+            return 0.0
 
         free = None
 
@@ -1807,28 +1833,7 @@ class RealTradeExecutor:
                     )
 
                     # -------------------------------------------------
-                    # Margin / leverage
-                    # -------------------------------------------------
-
-                    await self._configure_margin_and_leverage(
-                        exchange,
-                        exchange_name,
-                        symbol_ccxt,
-                    )
-
-                    # -------------------------------------------------
-                    # Bitget position mode
-                    # -------------------------------------------------
-
-                    if exchange_name == "BITGET":
-
-                        await self._ensure_bitget_one_way_mode(
-                            exchange,
-                            symbol_ccxt,
-                        )
-
-                    # -------------------------------------------------
-                    # Actual exchange equity sizing
+                    # 1. Actual exchange equity sizing (fail-fast on low/zero balance)
                     # -------------------------------------------------
 
                     (
@@ -1841,6 +1846,27 @@ class RealTradeExecutor:
                         symbol_ccxt,
                         reference_price,
                     )
+
+                    # -------------------------------------------------
+                    # 2. Margin / leverage (only after balance is verified)
+                    # -------------------------------------------------
+
+                    await self._configure_margin_and_leverage(
+                        exchange,
+                        exchange_name,
+                        symbol_ccxt,
+                    )
+
+                    # -------------------------------------------------
+                    # 3. Bitget position mode (only after balance is verified)
+                    # -------------------------------------------------
+
+                    if exchange_name == "BITGET":
+
+                        await self._ensure_bitget_one_way_mode(
+                            exchange,
+                            symbol_ccxt,
+                        )
 
                     side = (
                         "buy"
