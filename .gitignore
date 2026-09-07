@@ -109,7 +109,9 @@ test_classification_rescue.py
 test_ensemble_reliability.py
 train_all_paradigms.py
 smartcrypto_ai_models/train_regression_gbr.py
-scripts/
+scripts/*
+!scripts/reset_production_data.py
+!scripts/sync_exchange_tpsl.py
 tests/
 
 # ------------------------------------------------------------------------------
