@@ -1472,6 +1472,7 @@ class RealTradeExecutor:
 
             try:
 
+                order_type = "stop_market"
                 stop_params: Dict[str, Any] = {
                     "stopPrice": float(stop_loss),
                     "reduceOnly": True,
@@ -1479,15 +1480,13 @@ class RealTradeExecutor:
 
                 if exchange_name == "BITGET":
 
+                    order_type = "market"
+                    stop_params["stopLossPrice"] = float(stop_loss)
+                    stop_params.pop("stopPrice", None)
                     stop_params["clientOid"] = (
                         f"sl-{uuid.uuid4().hex[:20]}"
                     )
-
                     stop_params["oneWayMode"] = True
-
-                    # CRITICAL:
-                    # no tradeSide
-
                     stop_params.pop(
                         "tradeSide",
                         None,
@@ -1516,7 +1515,7 @@ class RealTradeExecutor:
 
                 order = await exchange.create_order(
                     symbol_ccxt,
-                    "stop_market",
+                    order_type,
                     close_side,
                     quantity,
                     None,
@@ -1553,6 +1552,7 @@ class RealTradeExecutor:
 
             try:
 
+                order_type = "take_profit_market"
                 tp_params: Dict[str, Any] = {
                     "stopPrice": float(take_profit),
                     "reduceOnly": True,
@@ -1560,15 +1560,13 @@ class RealTradeExecutor:
 
                 if exchange_name == "BITGET":
 
+                    order_type = "market"
+                    tp_params["takeProfitPrice"] = float(take_profit)
+                    tp_params.pop("stopPrice", None)
                     tp_params["clientOid"] = (
                         f"tp-{uuid.uuid4().hex[:20]}"
                     )
-
                     tp_params["oneWayMode"] = True
-
-                    # CRITICAL:
-                    # no tradeSide
-
                     tp_params.pop(
                         "tradeSide",
                         None,
@@ -1597,7 +1595,7 @@ class RealTradeExecutor:
 
                 order = await exchange.create_order(
                     symbol_ccxt,
-                    "take_profit_market",
+                    order_type,
                     close_side,
                     quantity,
                     None,
