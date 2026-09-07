@@ -248,6 +248,16 @@ class RealTradeExecutor:
 
         self.is_initialized = False
         self._bitget_one_way_verified = False
+        self._configured_symbols: Dict[str, Set[str]] = {
+            ex: set() for ex in self.SUPPORTED_EXCHANGES
+        }
+        self.max_signal_age_seconds: float = float(
+            getattr(
+                self.settings,
+                "MAX_SIGNAL_AGE_SECONDS",
+                120.0,
+            )
+        )
 
         self._initialization_lock = asyncio.Lock()
 
@@ -406,11 +416,17 @@ class RealTradeExecutor:
                     logger.warning(
                         "🧪 TESTNET / SANDBOX MODE IS ENABLED."
                     )
-                else:
+                if not self.use_testnet:
                     logger.warning(
                         "🔴 LIVE MAINNET REAL-MONEY "
                         "EXECUTION IS ENABLED."
                     )
+
+                # Launch background pre-warming of margin and leverage across monitored symbols
+                try:
+                    asyncio.create_task(self.prewarm_symbols())
+                except Exception as exc:
+                    logger.warning(f"Failed to schedule prewarm_symbols task: {exc}")
 
             else:
 
@@ -419,6 +435,92 @@ class RealTradeExecutor:
                 )
 
             return self.is_initialized
+
+    # =========================================================
+    # SYMBOL PRE-WARMING & CONFIGURATION (OFF CRITICAL PATH)
+    # =========================================================
+
+    async def prewarm_symbols(
+        self,
+        symbols: Optional[List[str]] = None,
+    ) -> None:
+        """
+        Pre-warm exchange configurations (margin mode, leverage, Bitget one-way mode)
+        in the background so that hot signal execution paths make ZERO configuration calls.
+        """
+        if not self.is_initialized:
+            return
+
+        target_symbols = symbols or list(
+            getattr(
+                self.settings,
+                "SYMBOLS",
+                [
+                    "BTCUSDT", "ETHUSDT", "BNBUSDT", "AVAXUSDT",
+                    "XRPUSDT", "DOGEUSDT", "ADAUSDT", "LINKUSDT",
+                    "SOLUSDT", "DOTUSDT", "AAVEUSDT", "SUIUSDT",
+                    "UNIUSDT", "LTCUSDT", "SUSHIUSDT", "ZECUSDT",
+                ],
+            )
+        )
+
+        logger.info(f"🔥 Pre-warming exchange configurations for {len(target_symbols)} symbols...")
+
+        for exchange_name in self.SUPPORTED_EXCHANGES:
+            exchange = self._get_exchange(exchange_name)
+            if exchange is None:
+                continue
+
+            # Ensure Bitget one-way mode globally once
+            if exchange_name == "BITGET":
+                try:
+                    await self._ensure_bitget_one_way_mode(
+                        exchange,
+                        "BTC/USDT:USDT",
+                    )
+                except Exception:
+                    pass
+
+            for symbol in target_symbols:
+                if symbol in self._configured_symbols.get(exchange_name, set()):
+                    continue
+                try:
+                    symbol_ccxt = self._get_ccxt_symbol(exchange, symbol)
+                    await self._configure_margin_and_leverage(
+                        exchange,
+                        exchange_name,
+                        symbol_ccxt,
+                    )
+                    self._configured_symbols.setdefault(exchange_name, set()).add(symbol)
+                except Exception as exc:
+                    logger.debug(f"Pre-warm skipped for {exchange_name} {symbol}: {exc}")
+
+        logger.info("✅ Exchange symbol pre-warming completed.")
+
+    def _get_signal_age_seconds(self, position: Any) -> Optional[float]:
+        """Calculate the age of an incoming signal/position in seconds."""
+        try:
+            entry_time = getattr(position, "entry_time", None)
+            if entry_time is None:
+                return None
+
+            dt = None
+            if isinstance(entry_time, str):
+                try:
+                    dt = datetime.fromisoformat(entry_time.replace("Z", "+00:00"))
+                except Exception:
+                    return None
+            elif isinstance(entry_time, datetime):
+                dt = entry_time
+            else:
+                return None
+
+            now = datetime.now(timezone.utc)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return max(0.0, (now - dt).total_seconds())
+        except Exception:
+            return None
 
     # =========================================================
     # EXCHANGE CREATION
@@ -835,9 +937,11 @@ class RealTradeExecutor:
         exchange,
         exchange_name: str,
         symbol_ccxt: str,
-    ) -> None:
+    ) -> Dict[str, bool]:
 
         exchange_name = exchange_name.upper()
+        margin_ok = False
+        leverage_ok = False
 
         # -----------------------------------------------------
         # Margin mode
@@ -857,6 +961,7 @@ class RealTradeExecutor:
                 ),
                 timeout=5.0,
             )
+            margin_ok = True
 
         except Exception as exc:
 
@@ -870,7 +975,9 @@ class RealTradeExecutor:
                 or "margin mode is the same" in message
             )
 
-            if not already_set:
+            if already_set:
+                margin_ok = True
+            else:
                 logger.warning(
                     f"⚠️ {exchange_name}: "
                     f"Could not set {self.margin_type} margin "
@@ -900,6 +1007,7 @@ class RealTradeExecutor:
                 ),
                 timeout=5.0,
             )
+            leverage_ok = True
 
             # If isolated on Bitget, also ensure short side is configured
             if exchange_name == "BITGET" and self.margin_type == "isolated":
@@ -925,12 +1033,24 @@ class RealTradeExecutor:
                 f"for {symbol_ccxt}: {exc}"
             )
 
-        logger.info(
-            f"⚙️ {exchange_name}: "
-            f"{symbol_ccxt} configured with "
-            f"{self.leverage}x "
-            f"{self.margin_type} margin."
-        )
+        if margin_ok and leverage_ok:
+            logger.info(
+                f"⚙️ {exchange_name}: "
+                f"{symbol_ccxt} configured with "
+                f"{self.leverage}x "
+                f"{self.margin_type} margin."
+            )
+        else:
+            logger.warning(
+                f"⚠️ {exchange_name}: "
+                f"{symbol_ccxt} configuration incomplete "
+                f"(margin_ok={margin_ok}, leverage_ok={leverage_ok})."
+            )
+
+        return {
+            "margin_ok": margin_ok,
+            "leverage_ok": leverage_ok,
+        }
 
     # =========================================================
     # BITGET POSITION MODE
@@ -1808,248 +1928,73 @@ class RealTradeExecutor:
                     "exchange_results": {},
                 }
 
-            exchange_results: Dict[
-                str,
-                Dict[str, Any],
-            ] = {}
+            # ---------------------------------------------------------
+            # 1. Stale signal guard
+            # ---------------------------------------------------------
+            signal_age = self._get_signal_age_seconds(position)
+            if signal_age is not None and signal_age > self.max_signal_age_seconds:
+                logger.warning(
+                    f"⚠️ Stale signal guard triggered for {symbol}: "
+                    f"Signal age is {signal_age:.1f}s (maximum allowed: {self.max_signal_age_seconds:.1f}s). "
+                    f"Aborting execution to prevent entry at stale price."
+                )
+                return {
+                    "status": "FAILED",
+                    "success": False,
+                    "executed": False,
+                    "error": f"Stale signal: age {signal_age:.1f}s exceeds limit {self.max_signal_age_seconds:.1f}s",
+                    "exchange_results": {},
+                }
 
+            # ---------------------------------------------------------
+            # 2. Dispatch orders concurrently across enabled exchanges
+            # ---------------------------------------------------------
+            tasks = []
+            for exchange_name in self.SUPPORTED_EXCHANGES:
+                exchange = self._get_exchange(exchange_name)
+                if exchange is None:
+                    continue
+                tasks.append(
+                    self._execute_open_single_exchange(
+                        exchange,
+                        exchange_name,
+                        position,
+                        symbol,
+                        action,
+                        reference_price,
+                    )
+                )
+
+            if not tasks:
+                logger.warning("No live exchanges enabled for execution.")
+                return {
+                    "status": "FAILED",
+                    "success": False,
+                    "executed": False,
+                    "error": "No exchanges enabled.",
+                    "exchange_results": {},
+                }
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            exchange_results: Dict[str, Dict[str, Any]] = {}
             successful: List[str] = []
             failed: List[str] = []
 
-            for exchange_name in self.SUPPORTED_EXCHANGES:
-
-                exchange = self._get_exchange(
-                    exchange_name
-                )
-
-                if exchange is None:
+            for r in results:
+                if isinstance(r, Exception):
+                    logger.error(f"❌ Unhandled error in exchange task: {r}", exc_info=True)
                     continue
-
-                try:
-
-                    symbol_ccxt = self._get_ccxt_symbol(
-                        exchange,
-                        symbol,
-                    )
-
-                    # -------------------------------------------------
-                    # 1. Actual exchange equity sizing (fail-fast on low/zero balance)
-                    # -------------------------------------------------
-
-                    (
-                        quantity,
-                        target_margin,
-                        notional,
-                    ) = await self._calculate_exchange_quantity(
-                        exchange,
-                        exchange_name,
-                        symbol_ccxt,
-                        reference_price,
-                    )
-
-                    # -------------------------------------------------
-                    # 2. Margin / leverage (only after balance is verified)
-                    # -------------------------------------------------
-
-                    await self._configure_margin_and_leverage(
-                        exchange,
-                        exchange_name,
-                        symbol_ccxt,
-                    )
-
-                    # -------------------------------------------------
-                    # 3. Bitget position mode (only after balance is verified)
-                    # -------------------------------------------------
-
-                    if exchange_name == "BITGET":
-
-                        await self._ensure_bitget_one_way_mode(
-                            exchange,
-                            symbol_ccxt,
-                        )
-
-                    side = (
-                        "buy"
-                        if action == "BUY"
-                        else "sell"
-                    )
-
-                    client_order_id = (
-                        f"st-{uuid.uuid4().hex[:20]}"
-                    )
-
-                    entry_params = (
-                        self._build_entry_params(
-                            exchange_name,
-                            client_order_id,
-                        )
-                    )
-
-                    logger.info(
-                        f"📤 {exchange_name}: "
-                        f"OPEN {side.upper()} "
-                        f"{quantity} "
-                        f"{exchange.market(symbol_ccxt)['id']}"
-                    )
-
-                    order = await self._create_market_order(
-                        exchange,
-                        exchange_name,
-                        symbol_ccxt,
-                        side,
-                        quantity,
-                        entry_params,
-                    )
-
-                    order = await self._verify_fill(
-                        exchange,
-                        exchange_name,
-                        symbol_ccxt,
-                        order,
-                    )
-
-                    status = str(
-                        order.get(
-                            "status",
-                            "",
-                        )
-                    ).lower()
-
-                    filled = self._safe_float(
-                        order.get(
-                            "filled",
-                            quantity,
-                        ),
-                        quantity,
-                    )
-
-                    average_price = self._safe_float(
-                        order.get(
-                            "average",
-                            order.get(
-                                "price",
-                                reference_price,
-                            ),
-                        ),
-                        reference_price,
-                    )
-
-                    success = (
-                        status in {
-                            "",
-                            "open",
-                            "closed",
-                            "filled",
-                        }
-                        and filled > 0
-                    )
-
-                    if not success:
-
-                        raise RuntimeError(
-                            f"Order was not confirmed filled. "
-                            f"status={status!r}, "
-                            f"filled={filled}"
-                        )
-
-                    protective = (
-                        await self._create_protective_orders(
-                            exchange,
-                            exchange_name,
-                            symbol_ccxt,
-                            action,
-                            filled,
-                            getattr(
-                                position,
-                                "stop_loss",
-                                None,
-                            ),
-                            getattr(
-                                position,
-                                "take_profit",
-                                None,
-                            ),
-                        )
-                    )
-
-                    exchange_results[
-                        exchange_name
-                    ] = {
-                        "success": True,
-                        "status": "FILLED",
-                        "symbol": symbol_ccxt,
-                        "exchange_symbol": exchange.market(
-                            symbol_ccxt
-                        ).get("id"),
-                        "side": side,
-                        "quantity": filled,
-                        "requested_quantity": quantity,
-                        "average_price": average_price,
-                        "notional": notional,
-                        "margin": target_margin,
-                        "leverage": self.leverage,
-                        "order_id": order.get("id"),
-                        "client_order_id": client_order_id,
-                        "order": order,
-                        "protective_orders": protective,
-                    }
-
-                    successful.append(
-                        exchange_name
-                    )
-
-                    self._order_cache[
-                        str(order.get("id"))
-                    ] = exchange_results[
-                        exchange_name
-                    ]
-
-                    self.active_orders.setdefault(
-                        symbol,
-                        {},
-                    )[exchange_name] = (
-                        exchange_results[
-                            exchange_name
-                        ]
-                    )
-
-                except InsufficientBalanceError as exc:
-
-                    logger.info(
-                        f"ℹ️ {exchange_name}: Available balance is "
-                        f"${exc.balance:.2f} (< $5.00 min). Skipping order execution on this exchange."
-                    )
-
-                    exchange_results[
-                        exchange_name
-                    ] = {
-                        "success": True,
-                        "status": "SKIPPED_INSUFFICIENT_BALANCE",
-                        "symbol": symbol_ccxt,
-                        "free_usdt": exc.balance,
-                        "note": "Skipped due to insufficient balance without failing trade.",
-                    }
-
-                except Exception as exc:
-
-                    failed.append(
-                        exchange_name
-                    )
-
-                    exchange_results[
-                        exchange_name
-                    ] = {
-                        "success": False,
-                        "status": "FAILED",
-                        "error": str(exc),
-                    }
-
-                    logger.error(
-                        f"❌ {exchange_name}: "
-                        f"Open execution failed for "
-                        f"{symbol}: {exc}",
-                        exc_info=True,
-                    )
+                if not isinstance(r, dict):
+                    continue
+                ex_name = r.get("exchange_name", "UNKNOWN")
+                exchange_results[ex_name] = r
+                if r.get("status") == "FILLED":
+                    successful.append(ex_name)
+                elif r.get("status") == "SKIPPED_INSUFFICIENT_BALANCE":
+                    pass
+                else:
+                    failed.append(ex_name)
 
             overall_status = (
                 "SUCCESS"
@@ -2092,6 +2037,168 @@ class RealTradeExecutor:
             )
 
             return result
+
+    # =========================================================
+    # SINGLE EXCHANGE OPEN WORKER (CONCURRENT)
+    # =========================================================
+
+    async def _execute_open_single_exchange(
+        self,
+        exchange,
+        exchange_name: str,
+        position: Any,
+        symbol: str,
+        action: str,
+        reference_price: float,
+    ) -> Dict[str, Any]:
+        """
+        Execute market open order and protective orders on a single exchange.
+        Runs concurrently without blocking other exchanges.
+        """
+        symbol_ccxt = self._get_ccxt_symbol(
+            exchange,
+            symbol,
+        )
+
+        try:
+            # 1. Actual exchange equity sizing (fail-fast on low/zero balance)
+            (
+                quantity,
+                target_margin,
+                notional,
+            ) = await self._calculate_exchange_quantity(
+                exchange,
+                exchange_name,
+                symbol_ccxt,
+                reference_price,
+            )
+
+            # 2. Pre-warmed configuration check (only run if symbol wasn't pre-warmed)
+            if symbol not in self._configured_symbols.get(exchange_name, set()):
+                await self._configure_margin_and_leverage(
+                    exchange,
+                    exchange_name,
+                    symbol_ccxt,
+                )
+                if exchange_name == "BITGET":
+                    await self._ensure_bitget_one_way_mode(
+                        exchange,
+                        symbol_ccxt,
+                    )
+                self._configured_symbols.setdefault(exchange_name, set()).add(symbol)
+
+            side = "buy" if action == "BUY" else "sell"
+            client_order_id = f"st-{uuid.uuid4().hex[:20]}"
+            entry_params = self._build_entry_params(
+                exchange_name,
+                client_order_id,
+            )
+
+            logger.info(
+                f"📤 {exchange_name}: "
+                f"OPEN {side.upper()} "
+                f"{quantity} "
+                f"{exchange.market(symbol_ccxt)['id']}"
+            )
+
+            order = await self._create_market_order(
+                exchange,
+                exchange_name,
+                symbol_ccxt,
+                side,
+                quantity,
+                entry_params,
+            )
+
+            order = await self._verify_fill(
+                exchange,
+                exchange_name,
+                symbol_ccxt,
+                order,
+            )
+
+            status = str(order.get("status", "")).lower()
+            filled = self._safe_float(
+                order.get("filled", quantity),
+                quantity,
+            )
+            average_price = self._safe_float(
+                order.get(
+                    "average",
+                    order.get("price", reference_price),
+                ),
+                reference_price,
+            )
+
+            success = (
+                status in {"", "open", "closed", "filled"}
+                and filled > 0
+            )
+
+            if not success:
+                raise RuntimeError(
+                    f"Order was not confirmed filled. status={status!r}, filled={filled}"
+                )
+
+            protective = await self._create_protective_orders(
+                exchange,
+                exchange_name,
+                symbol_ccxt,
+                action,
+                filled,
+                getattr(position, "stop_loss", None),
+                getattr(position, "take_profit", None),
+            )
+
+            res = {
+                "exchange_name": exchange_name,
+                "success": True,
+                "status": "FILLED",
+                "symbol": symbol_ccxt,
+                "exchange_symbol": exchange.market(symbol_ccxt).get("id"),
+                "side": side,
+                "quantity": filled,
+                "requested_quantity": quantity,
+                "average_price": average_price,
+                "notional": notional,
+                "margin": target_margin,
+                "leverage": self.leverage,
+                "order_id": order.get("id"),
+                "client_order_id": client_order_id,
+                "order": order,
+                "protective_orders": protective,
+            }
+
+            self._order_cache[str(order.get("id"))] = res
+            self.active_orders.setdefault(symbol, {})[exchange_name] = res
+            return res
+
+        except InsufficientBalanceError as exc:
+            logger.info(
+                f"ℹ️ {exchange_name}: Available balance is "
+                f"${exc.balance:.2f} (< $5.00 min). Skipping order execution on this exchange."
+            )
+            return {
+                "exchange_name": exchange_name,
+                "success": True,
+                "status": "SKIPPED_INSUFFICIENT_BALANCE",
+                "symbol": symbol_ccxt,
+                "free_usdt": exc.balance,
+                "note": "Skipped due to insufficient balance without failing trade.",
+            }
+
+        except Exception as exc:
+            logger.error(
+                f"❌ {exchange_name}: Open execution failed for {symbol}: {exc}",
+                exc_info=True,
+            )
+            return {
+                "exchange_name": exchange_name,
+                "success": False,
+                "status": "FAILED",
+                "symbol": symbol_ccxt,
+                "error": str(exc),
+            }
 
     # =========================================================
     # CLOSE POSITION - PUBLIC
@@ -2201,221 +2308,50 @@ class RealTradeExecutor:
             successful: List[str] = []
             failed: List[str] = []
 
+            tasks = []
             for exchange_name in self.SUPPORTED_EXCHANGES:
-
-                exchange = self._get_exchange(
-                    exchange_name
-                )
-
+                exchange = self._get_exchange(exchange_name)
                 if exchange is None:
                     continue
-
-                try:
-
-                    symbol_ccxt = self._get_ccxt_symbol(
+                tasks.append(
+                    self._execute_close_single_exchange(
                         exchange,
+                        exchange_name,
+                        position,
                         symbol,
-                    )
-
-                    # -------------------------------------------------
-                    # Use actual live exchange position size where
-                    # possible instead of blindly trusting the
-                    # portfolio quantity.
-                    # -------------------------------------------------
-
-                    live_quantity = await self._get_live_position_quantity(
-                        exchange,
-                        exchange_name,
-                        symbol_ccxt,
                         action,
-                    )
-
-                    if live_quantity <= 0:
-                        logger.info(
-                            f"ℹ️ {exchange_name}: No active live position found on exchange for "
-                            f"{symbol_ccxt} (live qty=0.0). Treating as already closed."
-                        )
-
-                        await self._cancel_symbol_open_orders(
-                            exchange,
-                            exchange_name,
-                            symbol_ccxt,
-                        )
-
-                        exchange_results[
-                            exchange_name
-                        ] = {
-                            "success": True,
-                            "status": "ALREADY_CLOSED",
-                            "symbol": symbol_ccxt,
-                            "quantity": 0.0,
-                            "reason": reason,
-                            "note": "Position already closed or was never opened on exchange.",
-                        }
-
-                        successful.append(
-                            exchange_name
-                        )
-
-                        continue
-
-                    close_quantity = live_quantity
-
-                    close_quantity = float(
-                        exchange.amount_to_precision(
-                            symbol_ccxt,
-                            close_quantity,
-                        )
-                    )
-
-                    if close_quantity <= 0:
-                        raise RuntimeError(
-                            "Exchange precision reduced close "
-                            "quantity to zero."
-                        )
-
-                    client_order_id = (
-                        f"cl-{uuid.uuid4().hex[:20]}"
-                    )
-
-                    close_params = (
-                        self._build_close_params(
-                            exchange_name,
-                            client_order_id,
-                        )
-                    )
-
-                    logger.info(
-                        f"📤 {exchange_name}: "
-                        f"CLOSE {close_side.upper()} "
-                        f"{close_quantity} "
-                        f"{exchange.market(symbol_ccxt)['id']} "
-                        f"| Reason={reason}"
-                    )
-
-                    order = await self._create_market_order(
-                        exchange,
-                        exchange_name,
-                        symbol_ccxt,
                         close_side,
-                        close_quantity,
-                        close_params,
+                        reason,
                     )
+                )
 
-                    order = await self._verify_fill(
-                        exchange,
-                        exchange_name,
-                        symbol_ccxt,
-                        order,
-                    )
+            if not tasks:
+                return {
+                    "status": "FAILED",
+                    "success": False,
+                    "executed": False,
+                    "error": "No exchanges enabled.",
+                    "exchange_results": {},
+                }
 
-                    status = str(
-                        order.get(
-                            "status",
-                            "",
-                        )
-                    ).lower()
+            results = await asyncio.gather(*tasks, return_exceptions=True)
 
-                    filled = self._safe_float(
-                        order.get(
-                            "filled",
-                            close_quantity,
-                        ),
-                        close_quantity,
-                    )
+            exchange_results: Dict[str, Dict[str, Any]] = {}
+            successful: List[str] = []
+            failed: List[str] = []
 
-                    average_price = self._safe_float(
-                        order.get(
-                            "average",
-                            order.get(
-                                "price",
-                                getattr(
-                                    position,
-                                    "current_price",
-                                    0.0,
-                                ),
-                            ),
-                        ),
-                        0.0,
-                    )
-
-                    success = (
-                        status in {
-                            "",
-                            "open",
-                            "closed",
-                            "filled",
-                        }
-                        and filled > 0
-                    )
-
-                    if not success:
-
-                        raise RuntimeError(
-                            f"Close order was not confirmed filled. "
-                            f"status={status!r}, "
-                            f"filled={filled}"
-                        )
-
-                    # -------------------------------------------------
-                    # Cancel remaining protective orders.
-                    # -------------------------------------------------
-
-                    await self._cancel_symbol_open_orders(
-                        exchange,
-                        exchange_name,
-                        symbol_ccxt,
-                    )
-
-                    exchange_results[
-                        exchange_name
-                    ] = {
-                        "success": True,
-                        "status": "CLOSED",
-                        "symbol": symbol_ccxt,
-                        "exchange_symbol": exchange.market(
-                            symbol_ccxt
-                        ).get("id"),
-                        "side": close_side,
-                        "quantity": filled,
-                        "average_price": average_price,
-                        "order_id": order.get("id"),
-                        "client_order_id": client_order_id,
-                        "reason": reason,
-                        "order": order,
-                    }
-
-                    successful.append(
-                        exchange_name
-                    )
-
-                    logger.info(
-                        f"✅ {exchange_name}: "
-                        f"CLOSE {close_side.upper()} "
-                        f"{filled} {symbol_ccxt} "
-                        f"@ {average_price:.8f}"
-                    )
-
-                except Exception as exc:
-
-                    failed.append(
-                        exchange_name
-                    )
-
-                    exchange_results[
-                        exchange_name
-                    ] = {
-                        "success": False,
-                        "status": "FAILED",
-                        "error": str(exc),
-                    }
-
-                    logger.error(
-                        f"❌ {exchange_name}: "
-                        f"Close execution failed for "
-                        f"{symbol}: {exc}",
-                        exc_info=True,
-                    )
+            for r in results:
+                if isinstance(r, Exception):
+                    logger.error(f"❌ Unhandled error in exchange close task: {r}", exc_info=True)
+                    continue
+                if not isinstance(r, dict):
+                    continue
+                ex_name = r.get("exchange_name", "UNKNOWN")
+                exchange_results[ex_name] = r
+                if r.get("success"):
+                    successful.append(ex_name)
+                else:
+                    failed.append(ex_name)
 
             overall_status = (
                 "SUCCESS"
@@ -2452,6 +2388,171 @@ class RealTradeExecutor:
             )
 
             return result
+
+    # =========================================================
+    # SINGLE EXCHANGE CLOSE WORKER (CONCURRENT)
+    # =========================================================
+
+    async def _execute_close_single_exchange(
+        self,
+        exchange,
+        exchange_name: str,
+        position: Any,
+        symbol: str,
+        action: str,
+        close_side: str,
+        reason: str,
+    ) -> Dict[str, Any]:
+        """
+        Execute close on a single exchange concurrently.
+        """
+        symbol_ccxt = self._get_ccxt_symbol(
+            exchange,
+            symbol,
+        )
+
+        try:
+            live_quantity = await self._get_live_position_quantity(
+                exchange,
+                exchange_name,
+                symbol_ccxt,
+                action,
+            )
+
+            if live_quantity <= 0:
+                logger.info(
+                    f"ℹ️ {exchange_name}: No active live position found on exchange for "
+                    f"{symbol_ccxt} (live qty=0.0). Treating as already closed."
+                )
+
+                await self._cancel_symbol_open_orders(
+                    exchange,
+                    exchange_name,
+                    symbol_ccxt,
+                )
+
+                return {
+                    "exchange_name": exchange_name,
+                    "success": True,
+                    "status": "ALREADY_CLOSED",
+                    "symbol": symbol_ccxt,
+                    "quantity": 0.0,
+                    "reason": reason,
+                    "note": "Position already closed or was never opened on exchange.",
+                }
+
+            close_quantity = float(
+                exchange.amount_to_precision(
+                    symbol_ccxt,
+                    live_quantity,
+                )
+            )
+
+            if close_quantity <= 0:
+                raise RuntimeError(
+                    "Exchange precision reduced close quantity to zero."
+                )
+
+            client_order_id = f"cl-{uuid.uuid4().hex[:20]}"
+
+            close_params = self._build_close_params(
+                exchange_name,
+                client_order_id,
+            )
+
+            logger.info(
+                f"📤 {exchange_name}: "
+                f"CLOSE {close_side.upper()} "
+                f"{close_quantity} "
+                f"{exchange.market(symbol_ccxt)['id']} "
+                f"| Reason={reason}"
+            )
+
+            order = await self._create_market_order(
+                exchange,
+                exchange_name,
+                symbol_ccxt,
+                close_side,
+                close_quantity,
+                close_params,
+            )
+
+            order = await self._verify_fill(
+                exchange,
+                exchange_name,
+                symbol_ccxt,
+                order,
+            )
+
+            status = str(order.get("status", "")).lower()
+
+            filled = self._safe_float(
+                order.get("filled", close_quantity),
+                close_quantity,
+            )
+
+            average_price = self._safe_float(
+                order.get(
+                    "average",
+                    order.get(
+                        "price",
+                        getattr(position, "current_price", 0.0),
+                    ),
+                ),
+                0.0,
+            )
+
+            success = (
+                status in {"", "open", "closed", "filled"}
+                and filled > 0
+            )
+
+            if not success:
+                raise RuntimeError(
+                    f"Close order was not confirmed filled. status={status!r}, filled={filled}"
+                )
+
+            # Cancel remaining protective orders
+            await self._cancel_symbol_open_orders(
+                exchange,
+                exchange_name,
+                symbol_ccxt,
+            )
+
+            logger.info(
+                f"✅ {exchange_name}: "
+                f"CLOSE {close_side.upper()} "
+                f"{filled} {symbol_ccxt} "
+                f"@ {average_price:.8f}"
+            )
+
+            return {
+                "exchange_name": exchange_name,
+                "success": True,
+                "status": "CLOSED",
+                "symbol": symbol_ccxt,
+                "exchange_symbol": exchange.market(symbol_ccxt).get("id"),
+                "side": close_side,
+                "quantity": filled,
+                "average_price": average_price,
+                "order_id": order.get("id"),
+                "client_order_id": client_order_id,
+                "reason": reason,
+                "order": order,
+            }
+
+        except Exception as exc:
+            logger.error(
+                f"❌ {exchange_name}: Close execution failed for {symbol}: {exc}",
+                exc_info=True,
+            )
+            return {
+                "exchange_name": exchange_name,
+                "success": False,
+                "status": "FAILED",
+                "symbol": symbol_ccxt,
+                "error": str(exc),
+            }
 
     # =========================================================
     # LIVE POSITION QUANTITY
