@@ -843,10 +843,15 @@ class RealTradeExecutor:
         # -----------------------------------------------------
 
         try:
+            margin_params: Dict[str, Any] = {}
+            if exchange_name == "BITGET":
+                margin_params["productType"] = "USDT-FUTURES"
+                margin_params["marginCoin"] = "USDT"
 
             await exchange.set_margin_mode(
                 self.margin_type,
                 symbol_ccxt,
+                margin_params,
             )
 
         except Exception as exc:
@@ -878,12 +883,29 @@ class RealTradeExecutor:
 
             if exchange_name == "BITGET":
                 params["productType"] = "USDT-FUTURES"
+                params["marginCoin"] = "USDT"
+                if self.margin_type == "isolated":
+                    # For Bitget isolated margin, configure leverage for long side
+                    params["holdSide"] = "long"
 
             await exchange.set_leverage(
                 self.leverage,
                 symbol_ccxt,
                 params,
             )
+
+            # If isolated on Bitget, also ensure short side is configured
+            if exchange_name == "BITGET" and self.margin_type == "isolated":
+                try:
+                    params_short = dict(params)
+                    params_short["holdSide"] = "short"
+                    await exchange.set_leverage(
+                        self.leverage,
+                        symbol_ccxt,
+                        params_short,
+                    )
+                except Exception:
+                    pass
 
         except Exception as exc:
 
