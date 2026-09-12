@@ -2956,23 +2956,28 @@ class HistoryManager:
         """
         Return compact Model 4 status for logging.
         """
-
         detection = (
-            signal.get(
-                "strategy_detection",
-                {},
-            )
+            signal.get("strategy_detection")
+            or signal.get("model4")
+            or signal.get("model4_strategies")
+            or signal.get("ai_model_breakdown", {}).get("model_4_strategy_detectors")
             or {}
         )
 
-        if not detection:
-
+        if not isinstance(detection, dict) or not detection:
             return "UNAVAILABLE"
 
-        bias = detection.get(
-            "bias",
-            "HOLD",
+        bias = str(
+            detection.get("bias")
+            or detection.get("strategy_bias")
+            or "HOLD"
         )
+
+        active_list = detection.get("active_strategies")
+        if isinstance(active_list, list):
+            active_cnt = len(active_list)
+        else:
+            active_cnt = detection.get("active_count", 0)
 
         confirmation = (
             detection.get(
@@ -2982,21 +2987,18 @@ class HistoryManager:
         )
 
         try:
-
             confirmation = float(
                 confirmation
             )
-
         except (
             TypeError,
             ValueError,
         ):
-
             confirmation = 0.0
 
-        return (
-            f"{bias}:{confirmation:.2f}"
-        )
+        if active_cnt:
+            return f"{bias} ({active_cnt}/9, Conf={confirmation:.2f})"
+        return f"{bias}:{confirmation:.2f}"
 
     # ============================================================
     # HEALTH CHECK

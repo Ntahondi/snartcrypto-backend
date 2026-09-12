@@ -592,6 +592,8 @@ class SignalGenerator:
                 },
                 'model4': model4_eval,
                 'model4_strategies': model4_eval,
+                'strategy_detection': model4_eval,
+                'expected_return': round(pred_4h if final_action == 'BUY' else -pred_4h, 5),
                 'expected_returns': {
                     '1h_return': f"{pred_1h:+.2%}",
                     '4h_return': f"{pred_4h:+.2%}",

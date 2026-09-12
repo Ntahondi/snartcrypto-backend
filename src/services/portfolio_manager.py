@@ -1391,7 +1391,7 @@ class PortfolioManager:
             True,
         ):
 
-            expected_return = self._extract_expected_return(
+            raw_expected_return = self._extract_expected_return(
                 signal
             )
 
@@ -1400,18 +1400,20 @@ class PortfolioManager:
                 0.0,
             )
 
-            if (
-                expected_return is not None
-                and expected_return
-                < min_expected_return
-            ):
+            if raw_expected_return is not None:
+                # For SELL (short) positions, a predicted price decline yields positive trade return.
+                if action in ("SELL", "SHORT") and raw_expected_return < 0:
+                    trade_expected_return = abs(raw_expected_return)
+                else:
+                    trade_expected_return = raw_expected_return
 
-                return False, (
-                    "Expected return below "
-                    f"profile minimum: "
-                    f"{expected_return:.3%} < "
-                    f"{min_expected_return:.3%}"
-                )
+                if trade_expected_return < min_expected_return:
+                    return False, (
+                        "Expected return below "
+                        f"profile minimum: "
+                        f"{trade_expected_return:.3%} < "
+                        f"{min_expected_return:.3%}"
+                    )
 
         # -----------------------------------------------------
         # Gate 8: Model 4 strategy detector
@@ -2226,11 +2228,16 @@ class PortfolioManager:
             # AI metadata
             # -------------------------------------------------
 
-            expected_return = (
+            raw_ret = (
                 self._extract_expected_return(
                     signal
                 )
                 or 0.0
+            )
+            expected_return = (
+                abs(raw_ret)
+                if action in ("SELL", "SHORT") and raw_ret < 0
+                else raw_ret
             )
 
             votes = signal.get(
