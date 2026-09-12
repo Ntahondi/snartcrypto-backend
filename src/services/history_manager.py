@@ -925,6 +925,16 @@ class HistoryManager:
                 .strip()
             )
 
+            # Enforce statistical truth: eliminate false-positive wins
+            if pnl_percentage is not None:
+                try:
+                    if float(pnl_percentage) <= 0.0 and normalized_outcome == "WIN":
+                        normalized_outcome = "LOSS"
+                    elif float(pnl_percentage) > 0.0 and normalized_outcome == "LOSS":
+                        normalized_outcome = "WIN"
+                except (ValueError, TypeError):
+                    pass
+
             if not normalized_outcome:
 
                 logger.error(

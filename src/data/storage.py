@@ -899,6 +899,35 @@ class DataStorage:
                 logger.error(f"Error purging anomalous closed trades: {e}")
                 return 0
 
+    def sanitize_trade_outcomes(self) -> int:
+        """Correct mislabeled trade outcomes where pnl_percentage <= 0 was marked WIN."""
+        with self._lock:
+            try:
+                if self.use_db and self.db_path.exists():
+                    conn = self._get_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        UPDATE closed_trades 
+                        SET outcome = 'LOSS' 
+                        WHERE outcome = 'WIN' AND pnl_percentage <= 0.0
+                    """)
+                    fixed = cursor.rowcount
+                    cursor.execute("""
+                        UPDATE closed_trades 
+                        SET outcome = 'WIN' 
+                        WHERE outcome = 'LOSS' AND pnl_percentage > 0.0
+                    """)
+                    fixed += cursor.rowcount
+                    conn.commit()
+                    conn.close()
+                    if fixed > 0:
+                        logger.info(f"Corrected {fixed} misclassified trade outcomes in database.")
+                    return fixed
+                return 0
+            except Exception as e:
+                logger.error(f"Error sanitizing trade outcomes: {e}")
+                return 0
+
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # PATTERN DRAWING OPERATIONS
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

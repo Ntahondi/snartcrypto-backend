@@ -919,16 +919,26 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------------
 
     TRADING_PROFILE: str = Field(
-        default="day_trader",
+        default="swing_trader",
+    )
+
+    PRIMARY_EXCHANGE: str = Field(
+        default="bitget",
+    )
+
+    DEFAULT_LEVERAGE: int = Field(
+        default=3,
+        ge=1,
+        le=100,
     )
 
     INITIAL_CAPITAL: float = Field(
-        default=10000.0,
+        default=80.0,
         gt=0.0,
     )
 
     COMMISSION_RATE: float = Field(
-        default=0.001,
+        default=0.0006,
         ge=0.0,
     )
 
@@ -937,13 +947,13 @@ class Settings(BaseSettings):
     )
 
     STOP_LOSS_PCT: float = Field(
-        default=0.02,
+        default=0.025,
         gt=0.0,
         lt=1.0,
     )
 
     TAKE_PROFIT_PCT: float = Field(
-        default=0.04,
+        default=0.06,
         gt=0.0,
         lt=1.0,
     )
@@ -954,12 +964,12 @@ class Settings(BaseSettings):
     )
 
     ATR_MULTIPLIER_TP: float = Field(
-        default=3.0,
+        default=2.8,
         gt=0.0,
     )
 
     MAX_HOLDING_HOURS: int = Field(
-        default=8,
+        default=24,
         gt=0,
     )
 

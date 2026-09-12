@@ -1497,14 +1497,15 @@ class MultiExchangeCollector:
     ):
         self.settings = settings
 
+        # Bitget is primary for predictions and position securing, Binance/Bybit as fallbacks
         self.collectors = {
+            "bitget": BitgetDataCollector(
+                settings
+            ),
             "binance": BinanceDataCollector(
                 settings
             ),
             "bybit": BybitDataCollector(
-                settings
-            ),
-            "bitget": BitgetDataCollector(
                 settings
             ),
         }

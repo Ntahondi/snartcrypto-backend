@@ -394,10 +394,13 @@ class SignalGenerator:
                 risk_level = self.risk_map[int(np.argmax(preds_smart[4][0]))]
                 market_regime = self.regime_map[int(np.argmax(preds_smart[5][0]))]
 
-                if action_4h == action_1d and action_4h in ['BUY', 'SELL']:
+                # CALIBRATION: Require 1h and 4h alignment to prevent false BUY bias
+                if action_1h == action_4h and action_4h in ['BUY', 'SELL']:
                     vote_m2 = action_4h
-                elif action_4h in ['BUY', 'SELL']:
+                elif action_4h == action_1d and action_4h in ['BUY', 'SELL'] and action_1h != ('SELL' if action_4h == 'BUY' else 'BUY'):
                     vote_m2 = action_4h
+                else:
+                    vote_m2 = 'HOLD'
 
             # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             # VOTE 3: Model 3 (Market GPT 1,000 Path Simulator)
@@ -417,41 +420,91 @@ class SignalGenerator:
                 raw_loss_prob = float(sim_res.get('loss_probability', 0.5))
                 exp_return_m3 = float(sim_res.get('expected_return', 0.0))
 
-                if (raw_win_prob >= 0.15 or exp_return_m3 >= 0.004) and raw_win_prob > raw_loss_prob * 1.5:
+                # CALIBRATION: Strict conviction gate (prob >= 50% and expected return >= 0.8%)
+                if (raw_win_prob >= 0.50 and exp_return_m3 >= 0.008) and raw_win_prob > raw_loss_prob * 1.5:
                     vote_m3 = 'BUY'
-                elif (raw_loss_prob >= 0.15 or exp_return_m3 <= -0.004) and raw_loss_prob > raw_win_prob * 1.5:
+                elif (raw_loss_prob >= 0.50 and exp_return_m3 <= -0.008) and raw_loss_prob > raw_win_prob * 1.5:
                     vote_m3 = 'SELL'
                 else:
                     vote_m3 = 'HOLD'
 
             # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # TALLY VOTES & 2/3 MAJORITY DECISION
+            # VOTE 4: Model 4 (Strategy Intelligence Layer)
             # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            votes = [vote_m1, vote_m2, vote_m3]
-            buy_votes = votes.count('BUY')
-            sell_votes = votes.count('SELL')
+            model4_eval = self.model4_engine.evaluate(current_data)
+            strat_bias = model4_eval.get('strategy_bias', 'NEUTRAL')
+            active_strats = model4_eval.get('active_strategies', [])
+            active_count = model4_eval.get('active_count', len(active_strats))
 
-            if buy_votes >= 2:
+            vote_m4 = 'HOLD'
+            if strat_bias == 'BUY' and active_count >= 2:
+                vote_m4 = 'BUY'
+            elif strat_bias == 'SELL' and active_count >= 2:
+                vote_m4 = 'SELL'
+
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # WEIGHTED COMMITTEE CONSENSUS
+            # M1: 0.40, M4: 0.35, M2: 0.15, M3: 0.10
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            weights = {'M1': 0.40, 'M4': 0.35, 'M2': 0.15, 'M3': 0.10}
+            val_map = {'BUY': 1.0, 'SELL': -1.0, 'HOLD': 0.0}
+
+            score_m1 = val_map.get(vote_m1, 0.0)
+            score_m4 = val_map.get(vote_m4, 0.0)
+            score_m2 = val_map.get(vote_m2, 0.0)
+            score_m3 = val_map.get(vote_m3, 0.0)
+
+            consensus_score = (
+                weights['M1'] * score_m1 +
+                weights['M4'] * score_m4 +
+                weights['M2'] * score_m2 +
+                weights['M3'] * score_m3
+            )
+
+            # Consensus Threshold: >= +0.45 for BUY, <= -0.45 for SELL
+            # (Guarantees that at least one primary model M1 or M4 is active and aligned)
+            if consensus_score >= 0.45:
                 final_action = 'BUY'
-                vote_count = buy_votes
-            elif sell_votes >= 2:
+            elif consensus_score <= -0.45:
                 final_action = 'SELL'
-                vote_count = sell_votes
             else:
-                self.logger.info(f"⏭️ Skipping {symbol}: No 2/3 Majority Consensus (Votes: M1={vote_m1}, M2={vote_m2}, M3={vote_m3})")
+                self.logger.info(
+                    f"⏭️ Skipping {symbol}: No Committee Consensus (Score={consensus_score:+.2f} | "
+                    f"M1={vote_m1}, M4={vote_m4}, M2={vote_m2}, M3={vote_m3})"
+                )
                 return None
 
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # MODEL 4: STRATEGY INTELLIGENCE LAYER EVALUATION
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            model4_eval = self.model4_engine.evaluate(current_data, committee_direction=final_action)
+            votes = [vote_m1, vote_m2, vote_m3, vote_m4]
+            vote_count = votes.count(final_action)
+            consensus_tag = f"WEIGHTED CONSENSUS ({consensus_score:+.2f})"
+
+            # Update Model 4 alignment now that final action is resolved
+            model4_eval['is_aligned'] = (strat_bias == final_action)
             conf_delta = model4_eval.get('confidence_delta', 0.0)
 
             # Calculate true Win Probability & modulate confidence with Model 4 feedback
             actual_win_prob = float(raw_win_prob if final_action == 'BUY' else raw_loss_prob)
-            base_confidence = float(max(0.55, actual_win_prob))
+            # Uninflated base confidence: reflect real ensemble probability without artificial floor
+            base_confidence = float(actual_win_prob if actual_win_prob > 0 else 0.50)
+            if vote_count == 3:
+                base_confidence = min(base_confidence + 0.10, 0.95)
             confidence = float(np.clip(base_confidence + conf_delta, 0.20, 0.98))
             strength = float(min(actual_win_prob * 0.9 + abs(pred_4h) * 10.0 + (0.05 if model4_eval.get('is_aligned') else 0.0), 1.0))
+
+            # Symmetrical Regime & Counter-Trend Alignment Filter
+            # Prevent entering long during strong macro bearish trends or short during strong bullish trends
+            if final_action == 'BUY' and (market_regime in ['BEARISH_TREND', 'HIGH_VOLATILITY_DOWNTREND'] or action_4h == 'SELL'):
+                self.logger.info(f"Skipping BUY on {symbol}: Counter-trend conflict (Regime: {market_regime}, 4h: {action_4h})")
+                return None
+            if final_action == 'SELL' and (market_regime in ['BULLISH_TREND', 'HIGH_VOLATILITY_UPTREND'] or action_4h == 'BUY'):
+                self.logger.info(f"Skipping SELL on {symbol}: Counter-trend conflict (Regime: {market_regime}, 4h: {action_4h})")
+                return None
+
+            # Minimum Signal Strength Filter (empirical data: strength >= 0.35 required for positive expectancy)
+            min_strength_filter = float(self.config.get('model', {}).get('min_strength', 0.30))
+            if strength < min_strength_filter:
+                self.logger.info(f"Skipping {symbol}: Signal strength {strength:.3f} below required minimum {min_strength_filter:.2f}")
+                return None
 
             consensus_tag = "3/3 UNANIMOUS" if vote_count == 3 else "2/3 MAJORITY"
 
@@ -514,6 +567,7 @@ class SignalGenerator:
                     },
                     'model_4_strategy_detectors': {
                         'strategy_bias': strat_bias,
+                        'vote': vote_m4,
                         'active_count': f"{len(active_strats)}/9",
                         'agreement_score': f"{model4_eval.get('agreement_score', 0.0):.1%}",
                         'conflict_score': f"{model4_eval.get('conflict_score', 0.0):.1%}",
@@ -522,7 +576,8 @@ class SignalGenerator:
                         'detectors': model4_eval.get('strategies', {})
                     },
                     'committee_consensus': {
-                        'majority_votes': f"{vote_count}/3",
+                        'majority_votes': f"{vote_count}/4",
+                        'weighted_score': round(float(consensus_score), 3),
                         'consensus_type': consensus_tag
                     }
                 },
@@ -530,7 +585,9 @@ class SignalGenerator:
                     'model_1': vote_m1,
                     'model_2': vote_m2,
                     'model_3': vote_m3,
-                    'majority': f"{vote_count}/3",
+                    'model_4': vote_m4,
+                    'weighted_score': round(float(consensus_score), 3),
+                    'majority': f"{vote_count}/4",
                     'tag': consensus_tag
                 },
                 'model4': model4_eval,

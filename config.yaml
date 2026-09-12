@@ -19,7 +19,7 @@ model:
   prediction_threshold: 0.55
   confidence_threshold: 0.6       # Fallback only
   min_confidence: 0.35            # ✅ Main filter
-  min_strength: 0.30              # ✅ Main filter
+  min_strength: 0.40              # ✅ Calibrated filter
   max_position_size: 0.15
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -60,15 +60,21 @@ data:
 # TRADING & RISK SETTINGS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 trading:
+  profile: "swing_trader"
+  exchange: "bitget"
+  leverage: 3
+  margin_mode: "isolated"
+  timeframe: "4h"
+
   risk:
     # Fallback (if ATR unavailable)
-    stop_loss_pct: 0.02
-    take_profit_pct: 0.04
+    stop_loss_pct: 0.025
+    take_profit_pct: 0.06
     
-    # ATR-Based (Primary)
+    # ATR-Based (Primary - Calibrated for 4H Swing)
     atr_multiplier_sl: 1.5
-    atr_multiplier_tp: 3.0
-    max_holding_hours: 4
+    atr_multiplier_tp: 2.8
+    max_holding_hours: 24
     
     max_portfolio_risk: 0.3
     risk_multipliers:
@@ -77,9 +83,9 @@ trading:
       AGGRESSIVE: 1.5
   
   timeframes:
-    - "1h"
     - "4h"
     - "1d"
+    - "1h"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # TRAINING SETTINGS

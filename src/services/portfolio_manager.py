@@ -159,8 +159,8 @@ class PortfolioManager:
 
     VERSION = "3.1.0"
 
-    # Safety ceiling: target 3 to 4 concurrent positions for balanced capital allocation.
-    MAX_POSITIONS_HARD_CAP = 4
+    # Safety ceiling: maximum positions across all symbols.
+    MAX_POSITIONS_HARD_CAP = 9
 
     DEFAULT_MIN_ALLOCATION_PCT = 0.01
 

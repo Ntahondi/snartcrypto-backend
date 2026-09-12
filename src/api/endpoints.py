@@ -211,30 +211,7 @@ def _fetch_live_exchange_ticker(sym_clean: str) -> Optional[float]:
     import urllib.request
     import json
 
-    # 1. Binance public ticker
-    try:
-        url = f"https://api.binance.com/api/v3/ticker/price?symbol={sym_clean}"
-        req = urllib.request.Request(url, headers={"User-Agent": "SnartCrypto/3.1"})
-        with urllib.request.urlopen(req, timeout=1.5) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            if "price" in data and float(data["price"]) > 0:
-                return float(data["price"])
-    except Exception:
-        pass
-
-    # 2. Bybit public linear ticker fallback
-    try:
-        url = f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={sym_clean}"
-        req = urllib.request.Request(url, headers={"User-Agent": "SnartCrypto/3.1"})
-        with urllib.request.urlopen(req, timeout=1.5) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            items = data.get("result", {}).get("list", [])
-            if items and "lastPrice" in items[0] and float(items[0]["lastPrice"]) > 0:
-                return float(items[0]["lastPrice"])
-    except Exception:
-        pass
-
-    # 3. Bitget public USDT-M Futures ticker fallback
+    # 1. Bitget public USDT-M Futures ticker (Primary for Bitget execution & position securing)
     try:
         url = f"https://api.bitget.com/api/v2/mix/market/ticker?symbol={sym_clean}&productType=USDT-FUTURES"
         req = urllib.request.Request(url, headers={"User-Agent": "SnartCrypto/3.1"})
@@ -246,7 +223,7 @@ def _fetch_live_exchange_ticker(sym_clean: str) -> Optional[float]:
     except Exception:
         pass
 
-    # 4. Bitget public Spot ticker fallback
+    # 2. Bitget public Spot ticker fallback
     try:
         url = f"https://api.bitget.com/api/v2/spot/market/tickers?symbol={sym_clean}"
         req = urllib.request.Request(url, headers={"User-Agent": "SnartCrypto/3.1"})
@@ -255,6 +232,29 @@ def _fetch_live_exchange_ticker(sym_clean: str) -> Optional[float]:
             items = data.get("data", [])
             if items and "lastPr" in items[0] and float(items[0]["lastPr"]) > 0:
                 return float(items[0]["lastPr"])
+    except Exception:
+        pass
+
+    # 3. Binance public ticker fallback
+    try:
+        url = f"https://api.binance.com/api/v3/ticker/price?symbol={sym_clean}"
+        req = urllib.request.Request(url, headers={"User-Agent": "SnartCrypto/3.1"})
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if "price" in data and float(data["price"]) > 0:
+                return float(data["price"])
+    except Exception:
+        pass
+
+    # 4. Bybit public linear ticker fallback
+    try:
+        url = f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={sym_clean}"
+        req = urllib.request.Request(url, headers={"User-Agent": "SnartCrypto/3.1"})
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            items = data.get("result", {}).get("list", [])
+            if items and "lastPrice" in items[0] and float(items[0]["lastPrice"]) > 0:
+                return float(items[0]["lastPrice"])
     except Exception:
         pass
 
@@ -1322,6 +1322,7 @@ class _PersistentLivePositionManager:
                 self.data_storage = _get_storage()
                 # Permanently purge any corrupted historical spike rows from database on startup
                 self.data_storage.purge_anomalous_closed_trades()
+                self.data_storage.sanitize_trade_outcomes()
             except Exception as e:
                 logger.warning(f"DataStorage init in LivePositionManager: {e}")
                 self.data_storage = None
@@ -1561,10 +1562,15 @@ class _PersistentLivePositionManager:
             tp_hit = (is_long and curr_p >= tp) or (not is_long and curr_p <= tp)
             # 2. Check Stop Loss / Trailing Lock Hit
             sl_hit = (is_long and curr_p <= sl) or (not is_long and curr_p >= sl)
-            # 3. Check Timeout Expiry
+            # 3. Adaptive Early Profit Securing (protect gained profit from retracing into timeout loss)
+            profit_secure_hit = (
+                (peak_pnl_pct >= 1.2 and pnl_pct <= peak_pnl_pct * 0.55 and pnl_pct >= 0.25) or
+                (elapsed_hours >= 3.5 and pnl_pct >= 0.75)
+            )
+            # 4. Check Timeout Expiry
             timeout_hit = elapsed_hours >= max_hours
 
-            if tp_hit or sl_hit or timeout_hit:
+            if tp_hit or sl_hit or profit_secure_hit or timeout_hit:
                 # Determine detailed close reason
                 if tp_hit:
                     exit_reason = "TAKE_PROFIT"
@@ -1575,6 +1581,8 @@ class _PersistentLivePositionManager:
                         exit_reason = "DYNAMIC_BREAKEVEN"
                     else:
                         exit_reason = "STOP_LOSS"
+                elif profit_secure_hit:
+                    exit_reason = "PROFIT_SECURED"
                 else:
                     if pos.get("extension_active", False):
                         exit_reason = "TIMEOUT_RECOVERY"
@@ -1591,7 +1599,7 @@ class _PersistentLivePositionManager:
                     realized_pnl = round((entry_p - curr_p) * qty, 2)
                     realized_pnl_pct = round(((entry_p - curr_p) / entry_p) * 100, 2) if entry_p > 0 else 0.0
 
-                outcome = "WIN" if realized_pnl >= 0 else "LOSS"
+                outcome = "WIN" if realized_pnl_pct > 0.0 else "LOSS"
 
                 closed_trade = {
                     "id": f"trade_{sym.lower()}_{int(now.timestamp())}",
@@ -1741,8 +1749,43 @@ class _PersistentLivePositionManager:
 
         now = datetime.now(timezone.utc)
         is_long = action in ("BUY", "LONG")
-        sl = round(entry_price * 0.965 if is_long else entry_price * 1.035, 4 if entry_price < 10 else 2)
-        tp = round(entry_price * 1.055 if is_long else entry_price * 0.945, 4 if entry_price < 10 else 2)
+        
+        # Respect AI signal's dynamic ATR-calibrated stop loss and take profit targets
+        strat = signal.get("strategy") or {}
+        sig_sl = signal.get("stop_loss") or strat.get("stop_loss")
+        sig_tp = signal.get("take_profit") or strat.get("take_profit_1") or strat.get("take_profit")
+
+        if sig_sl and float(sig_sl) > 0:
+            sl = float(sig_sl)
+        else:
+            sl = round(entry_price * 0.98 if is_long else entry_price * 1.02, 4 if entry_price < 10 else 2)
+
+        if sig_tp and float(sig_tp) > 0:
+            tp = float(sig_tp)
+        else:
+            tp = round(entry_price * 1.025 if is_long else entry_price * 0.975, 4 if entry_price < 10 else 2)
+
+        # Bitget 3x Swing Trader Sizing:
+        # For $80 capital, allocate 30% margin ($24.00) with 3x leverage = $72.00 notional exposure.
+        # Dynamically adapts to capital and respects Bitget exchange minimum order constraints.
+        leverage = int(signal.get("leverage") or getattr(services.settings, "DEFAULT_LEVERAGE", 3))
+        margin_pct = 0.30 if self.initial_capital <= 200.0 else 0.15
+        target_margin_usd = max(15.0, min(self.initial_capital * margin_pct, 150.0))
+        target_pos_usd = target_margin_usd * leverage
+
+        if entry_price >= 1000.0:
+            calculated_qty = round(target_pos_usd / entry_price, 5)
+        elif entry_price >= 10.0:
+            calculated_qty = round(target_pos_usd / entry_price, 3)
+        elif entry_price >= 1.0:
+            calculated_qty = round(target_pos_usd / entry_price, 2)
+        else:
+            calculated_qty = round(target_pos_usd / entry_price, 1)
+        raw_qty = signal.get("quantity")
+        if raw_qty is not None and float(raw_qty) > 0 and float(raw_qty) != 1.0:
+            pos_qty = float(raw_qty)
+        else:
+            pos_qty = calculated_qty
 
         self.positions[sym] = {
             "id": f"pos_{sym.lower()}_{int(now.timestamp())}",
@@ -1750,7 +1793,11 @@ class _PersistentLivePositionManager:
             "action": "BUY" if is_long else "SELL",
             "entry_price": entry_price,
             "current_price": entry_price,
-            "quantity": float(signal.get("quantity", 1.0)),
+            "quantity": pos_qty,
+            "margin": round(target_margin_usd, 2),
+            "notional": round(target_pos_usd, 2),
+            "leverage": leverage,
+            "exchange": "bitget",
             "entry_time": now.isoformat(),
             "stop_loss": sl,
             "take_profit": tp,
@@ -1764,20 +1811,20 @@ class _PersistentLivePositionManager:
             "extension_granted": False,
             "shield_status": "ACTIVE",
             "status": "OPEN",
-            "max_holding_hours": int(signal.get("max_holding_hours", 8)),
+            "max_holding_hours": int(signal.get("max_holding_hours", 24)),
             "session_id": "live_session",
             "signal_id": signal.get("signal_id", f"sig_{sym}_{int(now.timestamp())}"),
-            "timeframe": signal.get("timeframe", "1h"),
-            "profile_name": signal.get("profile_name", "day_trader"),
+            "timeframe": signal.get("timeframe", "4h"),
+            "profile_name": signal.get("profile_name", "swing_trader"),
             "ai_confidence": float(signal.get("confidence", 0.85)),
             "ai_signal_strength": float(signal.get("signal_strength", 0.80)),
             "expected_return": float(signal.get("expected_return", 4.5)),
-            "expected_time_to_profit": 4.0,
+            "expected_time_to_profit": 12.0,
             "ensemble_agreement": 1.0,
             "market_regime": signal.get("market_regime", "BULLISH_TREND" if is_long else "BEARISH_TREND"),
             "execution_status": "ACTIVE",
         }
-        logger.info(f"🎯 Opened genuine position for {sym} ({action}) from verified 1H candle signal at ${entry_price}")
+        logger.info(f"🎯 Opened Bitget {leverage}x swing position for {sym} ({action}) [Margin: ${target_margin_usd:.2f}, Notional: ${target_pos_usd:.2f}] at ${entry_price}")
         return True
 
     def get_portfolio_metrics(self, prices: Optional[Dict[str, float]] = None) -> Dict[str, Any]:

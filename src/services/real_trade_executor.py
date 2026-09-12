@@ -486,12 +486,13 @@ class RealTradeExecutor:
                     continue
                 try:
                     symbol_ccxt = self._get_ccxt_symbol(exchange, symbol)
-                    await self._configure_margin_and_leverage(
+                    config_res = await self._configure_margin_and_leverage(
                         exchange,
                         exchange_name,
                         symbol_ccxt,
                     )
-                    self._configured_symbols.setdefault(exchange_name, set()).add(symbol)
+                    if config_res and config_res.get("margin_ok") and config_res.get("leverage_ok"):
+                        self._configured_symbols.setdefault(exchange_name, set()).add(symbol)
                 except Exception as exc:
                     logger.debug(f"Pre-warm skipped for {exchange_name} {symbol}: {exc}")
 
@@ -967,11 +968,15 @@ class RealTradeExecutor:
 
             message = str(exc).lower()
 
-            # Exchanges often report "already isolated".
+            # Exchanges often report "already isolated", "consistent", etc.
             already_set = (
                 "already" in message
                 or "same" in message
+                or "consistent" in message
                 or "not modified" in message
+                or "no change" in message
+                or "repeat" in message
+                or "40775" in message
                 or "margin mode is the same" in message
             )
 
@@ -995,43 +1000,85 @@ class RealTradeExecutor:
             if exchange_name == "BITGET":
                 params["productType"] = "USDT-FUTURES"
                 params["marginCoin"] = "USDT"
-                if self.margin_type == "isolated":
-                    # For Bitget isolated margin, configure leverage for long side
-                    params["holdSide"] = "long"
 
-            await asyncio.wait_for(
-                exchange.set_leverage(
-                    self.leverage,
-                    symbol_ccxt,
-                    params,
-                ),
-                timeout=5.0,
-            )
-            leverage_ok = True
-
-            # If isolated on Bitget, also ensure short side is configured
-            if exchange_name == "BITGET" and self.margin_type == "isolated":
-                try:
-                    params_short = dict(params)
-                    params_short["holdSide"] = "short"
-                    await asyncio.wait_for(
-                        exchange.set_leverage(
-                            self.leverage,
-                            symbol_ccxt,
-                            params_short,
-                        ),
-                        timeout=5.0,
-                    )
-                except Exception:
-                    pass
+            # Attempt 1: Standard one-way mode (no holdSide)
+            try:
+                await asyncio.wait_for(
+                    exchange.set_leverage(
+                        self.leverage,
+                        symbol_ccxt,
+                        params,
+                    ),
+                    timeout=5.0,
+                )
+                leverage_ok = True
+            except Exception as exc_oneway:
+                msg_oneway = str(exc_oneway).lower()
+                # Check if Bitget reported already set or consistent
+                if (
+                    "already" in msg_oneway
+                    or "same" in msg_oneway
+                    or "consistent" in msg_oneway
+                    or "not modified" in msg_oneway
+                    or "no change" in msg_oneway
+                    or "40775" in msg_oneway
+                    or "repeat" in msg_oneway
+                ):
+                    leverage_ok = True
+                elif (
+                    exchange_name == "BITGET"
+                    and ("holdside" in msg_oneway or "side" in msg_oneway or "posside" in msg_oneway)
+                ):
+                    # Fallback for hedge-mode accounts: configure both long and short
+                    try:
+                        p_long = dict(params)
+                        p_long["holdSide"] = "long"
+                        await asyncio.wait_for(
+                            exchange.set_leverage(
+                                self.leverage,
+                                symbol_ccxt,
+                                p_long,
+                            ),
+                            timeout=5.0,
+                        )
+                        p_short = dict(params)
+                        p_short["holdSide"] = "short"
+                        await asyncio.wait_for(
+                            exchange.set_leverage(
+                                self.leverage,
+                                symbol_ccxt,
+                                p_short,
+                            ),
+                            timeout=5.0,
+                        )
+                        leverage_ok = True
+                    except Exception as exc_hedge:
+                        logger.warning(
+                            f"⚠️ {exchange_name}: "
+                            f"Hedge-mode leverage fallback failed for {symbol_ccxt}: {exc_hedge}"
+                        )
+                else:
+                    raise exc_oneway
 
         except Exception as exc:
 
-            logger.warning(
-                f"⚠️ {exchange_name}: "
-                f"Could not set leverage {self.leverage}x "
-                f"for {symbol_ccxt}: {exc}"
-            )
+            message = str(exc).lower()
+            if (
+                "already" in message
+                or "same" in message
+                or "consistent" in message
+                or "not modified" in message
+                or "no change" in message
+                or "40775" in message
+                or "repeat" in message
+            ):
+                leverage_ok = True
+            else:
+                logger.warning(
+                    f"⚠️ {exchange_name}: "
+                    f"Could not set leverage {self.leverage}x "
+                    f"for {symbol_ccxt}: {exc}"
+                )
 
         if margin_ok and leverage_ok:
             logger.info(
@@ -1364,6 +1411,9 @@ class RealTradeExecutor:
             # =================================================
 
             params["oneWayMode"] = True
+            params["marginMode"] = self.margin_type
+            params["marginCoin"] = "USDT"
+            params["productType"] = "USDT-FUTURES"
 
             params.pop(
                 "tradeSide",
@@ -1413,6 +1463,9 @@ class RealTradeExecutor:
 
             params["reduceOnly"] = True
             params["oneWayMode"] = True
+            params["marginMode"] = self.margin_type
+            params["marginCoin"] = "USDT"
+            params["productType"] = "USDT-FUTURES"
 
             params.pop(
                 "tradeSide",
@@ -1655,6 +1708,9 @@ class RealTradeExecutor:
                         f"sl-{uuid.uuid4().hex[:20]}"
                     )
                     stop_params["oneWayMode"] = True
+                    stop_params["marginMode"] = self.margin_type
+                    stop_params["marginCoin"] = "USDT"
+                    stop_params["productType"] = "USDT-FUTURES"
                     stop_params.pop(
                         "tradeSide",
                         None,
@@ -1735,6 +1791,9 @@ class RealTradeExecutor:
                         f"tp-{uuid.uuid4().hex[:20]}"
                     )
                     tp_params["oneWayMode"] = True
+                    tp_params["marginMode"] = self.margin_type
+                    tp_params["marginCoin"] = "USDT"
+                    tp_params["productType"] = "USDT-FUTURES"
                     tp_params.pop(
                         "tradeSide",
                         None,
@@ -2075,17 +2134,18 @@ class RealTradeExecutor:
 
             # 2. Pre-warmed configuration check (only run if symbol wasn't pre-warmed)
             if symbol not in self._configured_symbols.get(exchange_name, set()):
-                await self._configure_margin_and_leverage(
-                    exchange,
-                    exchange_name,
-                    symbol_ccxt,
-                )
                 if exchange_name == "BITGET":
                     await self._ensure_bitget_one_way_mode(
                         exchange,
                         symbol_ccxt,
                     )
-                self._configured_symbols.setdefault(exchange_name, set()).add(symbol)
+                config_res = await self._configure_margin_and_leverage(
+                    exchange,
+                    exchange_name,
+                    symbol_ccxt,
+                )
+                if config_res and config_res.get("margin_ok") and config_res.get("leverage_ok"):
+                    self._configured_symbols.setdefault(exchange_name, set()).add(symbol)
 
             side = "buy" if action == "BUY" else "sell"
             client_order_id = f"st-{uuid.uuid4().hex[:20]}"

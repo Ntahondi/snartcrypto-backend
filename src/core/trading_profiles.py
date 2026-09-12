@@ -122,6 +122,8 @@ class TradingProfile:
 
     position_size_pct: float = 0.20
     max_holding_hours: int = 8
+    leverage: int = 3
+    primary_exchange: str = "bitget"
 
     # ------------------------------------------------------------------------
     # SIGNAL ACCEPTANCE
@@ -1092,15 +1094,17 @@ def get_profile_swing() -> TradingProfile:
         trading_style=TradingStyle.SWING,
         risk_tolerance=RiskTolerance.CONSERVATIVE,
         signal_timeframe=SignalTimeframe.H4,
+        leverage=3,
+        primary_exchange="bitget",
 
         max_positions_per_symbol=1,
         max_total_positions=4,
 
-        position_size_pct=0.20,
+        position_size_pct=0.30,
         max_holding_hours=24,
 
-        min_confidence=0.50,
-        min_signal_strength=0.45,
+        min_confidence=0.45,
+        min_signal_strength=0.40,
 
         require_timeframe_alignment=True,
         require_ensemble_agreement=True,
@@ -1129,8 +1133,8 @@ def get_profile_swing() -> TradingProfile:
         model4_require_strategy_confirmation=True,
 
         # Risk
-        stop_loss_atr_mult=2.0,
-        take_profit_atr_mult=4.0,
+        stop_loss_atr_mult=1.5,
+        take_profit_atr_mult=2.8,
 
         max_daily_loss_pct=0.05,
         max_drawdown_pct=0.15,
@@ -1255,6 +1259,7 @@ PROFILES = {
     TradingStyle.SCALPER.value: get_profile_scalper,
     TradingStyle.DAY_TRADER.value: get_profile_day_trader,
     TradingStyle.SWING.value: get_profile_swing,
+    "swing_trader": get_profile_swing,
     TradingStyle.POSITION.value: get_profile_position,
     TradingStyle.TEST.value: get_profile_test,
 }
@@ -1265,23 +1270,23 @@ PROFILES = {
 # ============================================================================
 
 def get_profile(
-    name: str,
+    name: str = "swing_trader",
 ) -> TradingProfile:
     """
     Return a fresh TradingProfile instance.
 
-    Unknown profile names intentionally fall back to day_trader.
+    Unknown profile names intentionally fall back to swing_trader.
     """
 
     normalized_name = (
         str(name)
         .strip()
         .lower()
-    )
+    ) if name else "swing_trader"
 
     factory = PROFILES.get(
         normalized_name,
-        get_profile_day_trader,
+        get_profile_swing,
     )
 
     return factory()
