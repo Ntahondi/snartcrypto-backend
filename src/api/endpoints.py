@@ -3312,13 +3312,15 @@ async def confirm_crypto_invoice(
 
     # On-Chain Blockchain Payment Verification (Validates Amount, Recipient & Success)
     from src.services.crypto_verifier import CryptoPaymentVerifier
+    expected_amount = float(invoice.get("amount_usd", 0.0) or invoice.get("amount", 0.0))
     verification = await CryptoPaymentVerifier.verify_payment(
         tx_hash=tx_hash,
         expected_address=str(invoice.get("crypto_address", "")),
-        expected_amount_usdt=float(invoice.get("amount", 0.0)),
+        expected_amount_usdt=expected_amount,
         network=network,
+        invoice_created_at=invoice.get("created_at"),
     )
-    if not verification.get("valid", True):
+    if not verification.get("valid", False):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=verification.get("reason", "On-chain blockchain verification failed."),
@@ -3439,6 +3441,115 @@ async def get_billing_momo_status(
             "subscription": active_sub,
         },
     )
+
+
+# ============================================================================
+# ADMIN USER & SUBSCRIPTION OVERSIGHT
+# ============================================================================
+
+class AdminReviewInvoiceRequest(BaseModel):
+    action: str = Field(..., description="APPROVE | REJECT")
+    tx_hash: Optional[str] = Field(default=None, description="Optional verified tx_hash if manually confirming")
+    notes: Optional[str] = Field(default=None, description="Admin review notes")
+
+
+class AdminSetSubscriptionRequest(BaseModel):
+    plan_id: str = Field(..., description="vvip_99 | vip_49 | pro_20 | free")
+    duration_days: int = Field(default=30, ge=1, le=3650, description="Subscription duration in days")
+    reason: Optional[str] = Field(default=None, description="Reason for manual subscription grant")
+
+
+@router.get(
+    "/admin/users",
+    response_model=APIResponse,
+    summary="List all users with their roles, verification status, and active subscription plans",
+)
+async def admin_get_users(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    search: Optional[str] = Query(default=None, description="Search by email or user ID"),
+    role: Optional[str] = Query(default=None, description="Filter by role: guest, pro, vip, vvip, admin"),
+    admin: AuthenticatedUser = Depends(require_admin_user),
+) -> APIResponse:
+    storage = _get_storage()
+    data = storage.get_all_users_admin(limit=limit, offset=offset, search=search, role=role)
+    return APIResponse(timestamp=utc_now(), data=data)
+
+
+@router.get(
+    "/admin/invoices",
+    response_model=APIResponse,
+    summary="List all payment invoices with transaction details and status",
+)
+async def admin_get_invoices(
+    status: Optional[str] = Query(default=None, description="Filter by status: PENDING, CONFIRMED, REJECTED, EXPIRED"),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    admin: AuthenticatedUser = Depends(require_admin_user),
+) -> APIResponse:
+    storage = _get_storage()
+    data = storage.get_all_invoices_admin(status=status, limit=limit, offset=offset)
+    return APIResponse(timestamp=utc_now(), data=data)
+
+
+@router.post(
+    "/admin/invoices/{invoice_id}/review",
+    response_model=APIResponse,
+    summary="Manually approve or reject a payment invoice",
+)
+async def admin_review_invoice(
+    invoice_id: str,
+    req: AdminReviewInvoiceRequest,
+    admin: AuthenticatedUser = Depends(require_admin_user),
+) -> APIResponse:
+    storage = _get_storage()
+    res = storage.admin_review_invoice(
+        invoice_id=invoice_id,
+        action=req.action,
+        admin_notes=req.notes,
+        tx_hash=req.tx_hash,
+    )
+    if not res.get("success"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=res.get("error", "Failed to review invoice"),
+        )
+
+    # Invalidate session cache for all users so role changes take effect immediately
+    cache = get_cache_service()
+    await cache.delete_pattern("jwt_user:")
+
+    return APIResponse(timestamp=utc_now(), data=res)
+
+
+@router.post(
+    "/admin/users/{user_id}/subscription",
+    response_model=APIResponse,
+    summary="Directly grant, modify, or revoke a user's subscription plan",
+)
+async def admin_set_user_subscription(
+    user_id: str,
+    req: AdminSetSubscriptionRequest,
+    admin: AuthenticatedUser = Depends(require_admin_user),
+) -> APIResponse:
+    storage = _get_storage()
+    res = storage.admin_set_user_subscription(
+        user_id=user_id,
+        plan_id=req.plan_id,
+        duration_days=req.duration_days,
+        reason=req.reason,
+    )
+    if not res.get("success"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=res.get("error", "Failed to update user subscription"),
+        )
+
+    # Invalidate session cache
+    cache = get_cache_service()
+    await cache.delete_pattern("jwt_user:")
+
+    return APIResponse(timestamp=utc_now(), data=res)
 
 
 # ============================================================================

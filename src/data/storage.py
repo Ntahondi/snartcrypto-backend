@@ -12,7 +12,7 @@ import hashlib
 import hmac
 import base64
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any, Union
 import pandas as pd
 import logging
@@ -2035,6 +2035,311 @@ class DataStorage:
         except Exception as e:
             logger.error(f"Error listing user invoices: {e}")
             return []
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # ADMIN USER & SUBSCRIPTION CONTROLS
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    def get_all_users_admin(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        search: Optional[str] = None,
+        role: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Fetch all users joined with their current subscription status for admin view."""
+        try:
+            conn = self._get_connection()
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            query = """
+                SELECT 
+                    u.user_id,
+                    u.email,
+                    u.auth_provider,
+                    u.role,
+                    u.is_verified,
+                    u.created_at,
+                    u.last_login,
+                    s.subscription_id,
+                    s.plan_id,
+                    s.status as sub_status,
+                    s.started_at,
+                    s.expires_at,
+                    s.payment_method,
+                    s.amount_paid
+                FROM users u
+                LEFT JOIN subscriptions s ON u.user_id = s.user_id AND s.status = 'active'
+                WHERE 1=1
+            """
+            params: List[Any] = []
+
+            if search:
+                query += " AND (u.email LIKE ? OR u.user_id LIKE ?)"
+                search_term = f"%{search.strip()}%"
+                params.extend([search_term, search_term])
+
+            if role:
+                query += " AND u.role = ?"
+                params.append(role.strip().lower())
+
+            # Count total
+            count_query = f"SELECT COUNT(*) as total FROM ({query})"
+            cursor.execute(count_query, params)
+            total = cursor.fetchone()["total"]
+
+            query += " ORDER BY u.created_at DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            conn.close()
+
+            users = []
+            for r in rows:
+                d = dict(r)
+                sub_info = None
+                if d.get("subscription_id"):
+                    sub_info = {
+                        "subscription_id": d["subscription_id"],
+                        "plan_id": d["plan_id"],
+                        "status": d["sub_status"],
+                        "started_at": d["started_at"],
+                        "expires_at": d["expires_at"],
+                        "payment_method": d["payment_method"],
+                        "amount_paid": d["amount_paid"],
+                    }
+                user_item = {
+                    "user_id": d["user_id"],
+                    "email": d["email"],
+                    "auth_provider": d["auth_provider"],
+                    "role": d["role"],
+                    "is_verified": bool(d.get("is_verified", 0)),
+                    "created_at": d["created_at"],
+                    "last_login": d["last_login"],
+                    "active_subscription": sub_info,
+                }
+                users.append(user_item)
+
+            return {
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "users": users,
+            }
+        except Exception as e:
+            logger.error(f"Error getting admin users list: {e}")
+            return {"total": 0, "limit": limit, "offset": offset, "users": []}
+
+    def get_all_invoices_admin(
+        self,
+        status: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        """Fetch all invoices across all users with user email for admin oversight."""
+        try:
+            conn = self._get_connection()
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            query = """
+                SELECT 
+                    i.invoice_id,
+                    i.user_id,
+                    u.email as user_email,
+                    i.plan_id,
+                    i.amount_usd,
+                    i.currency,
+                    i.network,
+                    i.crypto_address,
+                    i.status,
+                    i.created_at,
+                    i.expires_at,
+                    i.confirmed_at,
+                    i.tx_hash
+                FROM invoices i
+                LEFT JOIN users u ON i.user_id = u.user_id
+                WHERE 1=1
+            """
+            params: List[Any] = []
+
+            if status:
+                query += " AND i.status = ?"
+                params.append(status.strip().upper())
+
+            count_query = f"SELECT COUNT(*) as total FROM ({query})"
+            cursor.execute(count_query, params)
+            total = cursor.fetchone()["total"]
+
+            query += " ORDER BY i.created_at DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            conn.close()
+
+            return {
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "invoices": [dict(r) for r in rows],
+            }
+        except Exception as e:
+            logger.error(f"Error getting admin invoices list: {e}")
+            return {"total": 0, "limit": limit, "offset": offset, "invoices": []}
+
+    def admin_set_user_subscription(
+        self,
+        user_id: str,
+        plan_id: str,
+        duration_days: int = 30,
+        reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Manually grant, update, or cancel a user's subscription tier."""
+        with self._lock:
+            try:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+
+                # Verify user exists
+                cursor.execute("SELECT user_id, email, role FROM users WHERE user_id = ?", (user_id,))
+                user = cursor.fetchone()
+                if not user:
+                    conn.close()
+                    return {"success": False, "error": f"User {user_id} not found."}
+
+                plan_clean = plan_id.strip().lower()
+                # Determine target role and amount
+                plan_roles = {
+                    "vvip_99": ("vvip", 99.0),
+                    "vip_49": ("vip", 49.0),
+                    "pro_20": ("pro", 20.0),
+                    "free": ("guest", 0.0),
+                }
+
+                if plan_clean not in plan_roles:
+                    conn.close()
+                    return {"success": False, "error": f"Invalid plan_id: {plan_id}. Options: vvip_99, vip_49, pro_20, free"}
+
+                target_role, amount = plan_roles[plan_clean]
+
+                # 1. Update user role in users table
+                cursor.execute("UPDATE users SET role = ? WHERE user_id = ?", (target_role, user_id))
+
+                # 2. Cancel existing active subscriptions
+                cursor.execute(
+                    "UPDATE subscriptions SET status = 'cancelled' WHERE user_id = ? AND status = 'active'",
+                    (user_id,)
+                )
+
+                sub_id = None
+                now_dt = datetime.now(timezone.utc)
+                exp_dt = now_dt + timedelta(days=duration_days)
+
+                # 3. Create new subscription record if not free
+                if plan_clean != "free":
+                    sub_id = f"sub_adm_{secrets.token_hex(6)}"
+                    cursor.execute("""
+                        INSERT INTO subscriptions (
+                            subscription_id, user_id, plan_id, status, started_at, expires_at, payment_method, amount_paid
+                        ) VALUES (?, ?, ?, 'active', ?, ?, 'admin_manual', ?)
+                    """, (
+                        sub_id,
+                        user_id,
+                        plan_clean,
+                        now_dt.isoformat(),
+                        exp_dt.isoformat(),
+                        amount,
+                    ))
+
+                conn.commit()
+                conn.close()
+
+                logger.info(
+                    f"👑 Admin updated subscription for user {user_id} ({user[1]}): "
+                    f"Plan={plan_clean}, Role={target_role}, Expires={exp_dt.isoformat() if plan_clean != 'free' else 'N/A'}"
+                )
+
+                return {
+                    "success": True,
+                    "user_id": user_id,
+                    "email": user[1],
+                    "role": target_role,
+                    "plan_id": plan_clean,
+                    "subscription_id": sub_id,
+                    "expires_at": exp_dt.isoformat() if plan_clean != "free" else None,
+                    "message": f"Successfully updated user {user[1]} to {plan_clean.upper()} ({target_role.upper()}).",
+                }
+            except Exception as e:
+                logger.error(f"Error setting admin user subscription: {e}")
+                return {"success": False, "error": str(e)}
+
+    def admin_review_invoice(
+        self,
+        invoice_id: str,
+        action: str,
+        admin_notes: Optional[str] = None,
+        tx_hash: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Manually approve or reject a payment invoice."""
+        with self._lock:
+            try:
+                conn = self._get_connection()
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+
+                cursor.execute("SELECT * FROM invoices WHERE invoice_id = ?", (invoice_id,))
+                invoice = cursor.fetchone()
+                if not invoice:
+                    conn.close()
+                    return {"success": False, "error": f"Invoice {invoice_id} not found."}
+
+                inv_dict = dict(invoice)
+                user_id = inv_dict["user_id"]
+                plan_id = inv_dict["plan_id"]
+                action_clean = action.strip().upper()
+
+                if action_clean == "APPROVE":
+                    conn.close()
+                    # Confirm invoice and provision subscription
+                    confirmed = self.confirm_invoice(invoice_id, tx_hash=tx_hash or inv_dict.get("tx_hash"))
+                    if confirmed:
+                        return {
+                            "success": True,
+                            "action": "APPROVED",
+                            "invoice_id": invoice_id,
+                            "status": "CONFIRMED",
+                            "user_id": user_id,
+                            "plan_id": plan_id,
+                            "message": f"Invoice {invoice_id} approved. Subscription activated for user.",
+                        }
+                    else:
+                        return {"success": False, "error": "Failed to confirm invoice."}
+
+                elif action_clean == "REJECT":
+                    cursor.execute(
+                        "UPDATE invoices SET status = 'REJECTED' WHERE invoice_id = ?",
+                        (invoice_id,)
+                    )
+                    conn.commit()
+                    conn.close()
+                    logger.info(f"🚫 Admin rejected invoice {invoice_id} for user {user_id}. Notes: {admin_notes}")
+                    return {
+                        "success": True,
+                        "action": "REJECTED",
+                        "invoice_id": invoice_id,
+                        "status": "REJECTED",
+                        "message": f"Invoice {invoice_id} marked as REJECTED.",
+                    }
+                else:
+                    conn.close()
+                    return {"success": False, "error": f"Invalid action: {action}. Use 'APPROVE' or 'REJECT'."}
+
+            except Exception as e:
+                logger.error(f"Error reviewing invoice: {e}")
+                return {"success": False, "error": str(e)}
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # CELEBRATION WINS FEED
