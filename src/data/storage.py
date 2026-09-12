@@ -918,10 +918,21 @@ class DataStorage:
                         WHERE outcome = 'LOSS' AND pnl_percentage > 0.0
                     """)
                     fixed += cursor.rowcount
+
+                    # Purge unmonitored ghost 'OPEN' signals that have no position_id attached
+                    cursor.execute("""
+                        DELETE FROM signals 
+                        WHERE outcome = 'OPEN' 
+                          AND (position_id IS NULL OR position_id = '')
+                    """)
+                    purged = cursor.rowcount
+
                     conn.commit()
                     conn.close()
                     if fixed > 0:
                         logger.info(f"Corrected {fixed} misclassified trade outcomes in database.")
+                    if purged > 0:
+                        logger.info(f"Purged {purged} orphaned unmonitored 'OPEN' signals from database.")
                     return fixed
                 return 0
             except Exception as e:

@@ -1186,13 +1186,8 @@ class MarketAnalyzer:
                         f"{signal.get('signal_strength', 0):.1%}"
                     )
 
-                    # -------------------------------------------------
-                    # Persist signal.
-                    # -------------------------------------------------
-
-                    await self._save_signal_safely(
-                        signal
-                    )
+                    # Update in-memory latest signals cache
+                    self.latest_signals[symbol] = signal
 
                 return signal
 
@@ -1346,9 +1341,8 @@ class MarketAnalyzer:
                     f"⏭️ [Micro-Batch Staging] {sym} ranked #{rank} (Conviction: {score:.1f}, Conf: {conf:.1%}) "
                     f"SKIPPED: Target positions ({target_max_positions}) reserved for higher-conviction setups."
                 )
-                # Keep latest signals updated for frontend/analytics
+                # Keep latest signals updated in-memory for frontend/analytics
                 self.latest_signals[sym] = signal
-                await self._save_signal_safely(signal)
                 continue
 
             # Check available capital before executing
@@ -1359,7 +1353,6 @@ class MarketAnalyzer:
                     f"SKIPPED: Available capital (${self.portfolio_manager.available_capital:.2f}) depleted."
                 )
                 self.latest_signals[sym] = signal
-                await self._save_signal_safely(signal)
                 continue
 
             # Execute the candidate signal
@@ -1431,9 +1424,8 @@ class MarketAnalyzer:
                     f"⏭️ [Profile Filter] Signal for {symbol} (Rank #{rank}, Score: {score:.1f}) rejected by '{profile_name}': "
                     f"{reason}"
                 )
-                # Keep latest signals updated
+                # Keep latest signals updated in-memory for frontend/analytics
                 self.latest_signals[symbol] = signal
-                await self._save_signal_safely(signal)
                 return False
 
             # -----------------------------------------------------
