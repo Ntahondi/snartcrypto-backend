@@ -173,6 +173,8 @@ class EmailService:
             user = self.settings.SMTP_USER
             password = self.settings.SMTP_PASSWORD
             from_email = self.settings.SMTP_FROM_EMAIL or user
+            if not from_email or "@" not in from_email or "." not in from_email.split("@")[-1]:
+                from_email = user
             from_name = self.settings.SMTP_FROM_NAME or "SnartCrypto"
             use_tls = getattr(self.settings, "SMTP_USE_TLS", True)
 
