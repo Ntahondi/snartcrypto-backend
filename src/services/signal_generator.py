@@ -284,8 +284,77 @@ class SignalGenerator:
             self.logger.error(f"Error preparing Smart Trader features: {e}")
             return None
 
+    def calculate_timeframe_confidence(
+        self,
+        final_action: str,
+        pred_1h: float,
+        pred_4h: float,
+        pred_12h: float,
+        preds_smart: Optional[List[np.ndarray]],
+        model4_eval: Dict[str, Any],
+    ) -> Dict[str, float]:
+        """
+        Synthesize multi-model timeframe directional confidence for 1h, 4h, and 1d horizons.
+        Weights evidence from:
+          - Model 1 (45%): Continuous regression expected return alignment and magnitude
+          - Model 2 (30%): Smart Trader multi-head directional probability distribution spread
+          - Model 4 (25%): Strategy intelligence setup & bias alignment
+        """
+        # --- Model 1 Horizon Scores (0.05 to 0.95) ---
+        def _score_m1_ret(ret: float, act: str) -> float:
+            norm_ret = ret if act == 'BUY' else -ret
+            if norm_ret >= 0:
+                return float(np.clip(0.50 + norm_ret * 50.0, 0.50, 0.95))
+            else:
+                return float(np.clip(0.50 + norm_ret * 50.0, 0.05, 0.50))
+
+        score_m1_1h = _score_m1_ret(pred_1h, final_action)
+        score_m1_4h = _score_m1_ret(pred_4h, final_action)
+        score_m1_1d = _score_m1_ret(pred_12h, final_action)
+
+        # --- Model 2 Horizon Scores (0.10 to 0.95) ---
+        def _score_m2_probs(head_probs: Optional[np.ndarray], act: str) -> float:
+            if head_probs is None:
+                return 0.50
+            p = head_probs[0] if len(head_probs.shape) == 2 else head_probs
+            p_sell = float(p[0])
+            p_buy = float(p[2])
+            p_dir = p_buy if act == 'BUY' else p_sell
+            p_opp = p_sell if act == 'BUY' else p_buy
+            spread = p_dir - p_opp
+            return float(np.clip(0.50 + spread * 1.5, 0.10, 0.95))
+
+        score_m2_1h = _score_m2_probs(preds_smart[0] if preds_smart is not None else None, final_action)
+        score_m2_4h = _score_m2_probs(preds_smart[1] if preds_smart is not None else None, final_action)
+        score_m2_1d = _score_m2_probs(preds_smart[2] if preds_smart is not None else None, final_action)
+
+        # --- Model 4 Strategy Alignment Scores (0.10 to 0.95) ---
+        strat_bias = model4_eval.get('strategy_bias', 'NEUTRAL')
+        agree_score = float(model4_eval.get('agreement_score', 0.0))
+        if strat_bias == final_action:
+            score_m4_base = float(np.clip(0.60 + agree_score * 0.35, 0.60, 0.95))
+        elif strat_bias == 'NEUTRAL':
+            score_m4_base = 0.50
+        else:
+            score_m4_base = float(np.clip(0.40 - agree_score * 0.30, 0.10, 0.40))
+
+        strats = model4_eval.get('strategies', {})
+        swing_aligned = strats.get('swing_trading_setup', {}).get('detected', False) and strats.get('swing_trading_setup', {}).get('action') == final_action
+        ma_aligned = strats.get('ma_crossover', {}).get('detected', False) and strats.get('ma_crossover', {}).get('action') == final_action
+
+        score_m4_4h = float(np.clip(score_m4_base + (0.08 if swing_aligned or ma_aligned else 0.0), 0.10, 0.95))
+        score_m4_1h = score_m4_base
+        score_m4_1d = float(np.clip(score_m4_base + (0.05 if ma_aligned else 0.0), 0.10, 0.95))
+
+        # --- Composite Weights: M1=0.45, M2=0.30, M4=0.25 ---
+        conf_1h = round(float(0.45 * score_m1_1h + 0.30 * score_m2_1h + 0.25 * score_m4_1h), 3)
+        conf_4h = round(float(0.45 * score_m1_4h + 0.30 * score_m2_4h + 0.25 * score_m4_4h), 3)
+        conf_1d = round(float(0.45 * score_m1_1d + 0.30 * score_m2_1d + 0.25 * score_m4_1d), 3)
+
+        return {'1h': conf_1h, '4h': conf_4h, '1d': conf_1d}
+
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # 2-OUT-OF-3 MAJORITY VOTING + MODEL 4 EVALUATION
+    # 4-MODEL COMMITTEE VOTING + MODEL 4 EVALUATION
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     async def generate_signal(
         self,
@@ -383,6 +452,7 @@ class SignalGenerator:
             # VOTE 2: Model 2 (6-Head Smart Trader AI)
             # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             vote_m2 = 'HOLD'
+            preds_smart = None
             action_1h, action_4h, action_1d = 'HOLD', 'HOLD', 'HOLD'
             risk_level, market_regime = 'MEDIUM', 'TRENDING'
 
@@ -476,17 +546,23 @@ class SignalGenerator:
 
             votes = [vote_m1, vote_m2, vote_m3, vote_m4]
             vote_count = votes.count(final_action)
-            consensus_tag = f"WEIGHTED CONSENSUS ({consensus_score:+.2f})"
+            if vote_count == 4:
+                consensus_tag = "4/4 UNANIMOUS"
+            elif vote_count == 3:
+                consensus_tag = "3/4 SUPERMAJORITY"
+            else:
+                consensus_tag = f"2/4 WEIGHTED MAJORITY ({consensus_score:+.2f})"
 
             # Update Model 4 alignment now that final action is resolved
             model4_eval['is_aligned'] = (strat_bias == final_action)
+            model4_eval['strategy_confirmation'] = (strat_bias == final_action) or (float(model4_eval.get('confirmation_score', 0.5)) >= 0.45)
             conf_delta = model4_eval.get('confidence_delta', 0.0)
 
             # Calculate true Win Probability & modulate confidence with Model 4 feedback
             actual_win_prob = float(raw_win_prob if final_action == 'BUY' else raw_loss_prob)
             # Uninflated base confidence: reflect real ensemble probability without artificial floor
             base_confidence = float(actual_win_prob if actual_win_prob > 0 else 0.50)
-            if vote_count == 3:
+            if vote_count >= 3:
                 base_confidence = min(base_confidence + 0.10, 0.95)
             confidence = float(np.clip(base_confidence + conf_delta, 0.20, 0.98))
             strength = float(min(actual_win_prob * 0.9 + abs(pred_4h) * 10.0 + (0.05 if model4_eval.get('is_aligned') else 0.0), 1.0))
@@ -506,8 +582,6 @@ class SignalGenerator:
                 self.logger.info(f"Skipping {symbol}: Signal strength {strength:.3f} below required minimum {min_strength_filter:.2f}")
                 return None
 
-            consensus_tag = "3/3 UNANIMOUS" if vote_count == 3 else "2/3 MAJORITY"
-
             # Strategy SL/TP Levels
             atr = float(current_data['atr14'].iloc[-1]) if 'atr14' in current_data.columns else current_price * 0.01
             sl_mult = float(self.config['trading']['risk']['atr_multiplier_sl'])
@@ -526,6 +600,20 @@ class SignalGenerator:
             strat_bias = model4_eval.get('strategy_bias', 'NEUTRAL')
             strat_summary = f" [Model4: {strat_bias} | {len(active_strats)}/9 Active]" if active_strats else ""
 
+            tf_conf = self.calculate_timeframe_confidence(
+                final_action=final_action,
+                pred_1h=pred_1h,
+                pred_4h=pred_4h,
+                pred_12h=pred_12h,
+                preds_smart=preds_smart,
+                model4_eval=model4_eval,
+            )
+
+            # Timeframe alignment evaluates multi-model confidence without letting Model 2's HOLD veto:
+            # - Primary swing/day horizon (4h or 1h) confidence passes baseline (>= 0.45)
+            # - Macro trend does not strongly oppose (1d >= 0.28)
+            timeframe_alignment = (tf_conf['4h'] >= 0.45 or tf_conf['1h'] >= 0.45) and (tf_conf['1d'] >= 0.28)
+
             signal = {
                 'timestamp': datetime.now().isoformat() + 'Z',
                 'symbol': symbol,
@@ -536,11 +624,12 @@ class SignalGenerator:
                 'direction_1h': action_1h,
                 'direction_4h': action_4h,
                 'direction_1d': action_1d,
-                'timeframe_alignment': (action_1h == final_action) and (action_4h in {final_action, 'HOLD', ''}),
+                'timeframe_alignment': bool(timeframe_alignment),
+                'timeframe_confidence': tf_conf,
                 'timeframe_confirmation': {
-                    '1h': action_1h,
-                    '4h': action_4h,
-                    '1d': action_1d,
+                    '1h': 'BUY' if tf_conf['1h'] >= 0.50 else ('SELL' if tf_conf['1h'] <= 0.40 else action_1h),
+                    '4h': 'BUY' if tf_conf['4h'] >= 0.50 else ('SELL' if tf_conf['4h'] <= 0.40 else action_4h),
+                    '1d': 'BUY' if tf_conf['1d'] >= 0.50 else ('SELL' if tf_conf['1d'] <= 0.40 else action_1d),
                 },
                 'risk_level': risk_level,
                 'market_regime': market_regime,
@@ -611,14 +700,15 @@ class SignalGenerator:
                     'max_holding_hours': self.config['trading']['risk']['max_holding_hours']
                 },
                 'analysis': {
-                    'summary': f"{consensus_tag} {final_action} on {symbol} (M1={vote_m1}, M2={vote_m2}, M3={vote_m3}){strat_summary}",
+                    'summary': f"{consensus_tag} {final_action} on {symbol} (M1={vote_m1}, M2={vote_m2}, M3={vote_m3}, M4={vote_m4}){strat_summary}",
                     'signal_type': 'STRONG_TREND',
-                    'detected_pattern': f"AI_{vote_count}_OF_3_VOTE",
+                    'detected_pattern': f"AI_{vote_count}_OF_4_VOTE",
                     'active_strategies': active_strats,
+                    'timeframe_confidence': tf_conf,
                     'timeframe_consensus': {
-                        '1h': 'BUY' if pred_1h > 0.0005 else ('SELL' if pred_1h < -0.0005 else final_action),
-                        '4h': 'BUY' if pred_4h > 0.001 else ('SELL' if pred_4h < -0.001 else final_action),
-                        '1d': 'BUY' if pred_12h > 0.002 else ('SELL' if pred_12h < -0.002 else final_action),
+                        '1h': 'BUY' if tf_conf['1h'] >= 0.50 else ('SELL' if tf_conf['1h'] <= 0.40 else 'HOLD'),
+                        '4h': 'BUY' if tf_conf['4h'] >= 0.50 else ('SELL' if tf_conf['4h'] <= 0.40 else 'HOLD'),
+                        '1d': 'BUY' if tf_conf['1d'] >= 0.50 else ('SELL' if tf_conf['1d'] <= 0.40 else 'HOLD'),
                     }
                 },
                 'outcome': 'OPEN',
@@ -627,8 +717,8 @@ class SignalGenerator:
             }
 
             self.logger.info(
-                f"🎯 {consensus_tag} APPROVED {symbol}: {final_action} (Votes: {vote_count}/3 | "
-                f"M1={vote_m1}, M2={vote_m2}, M3={vote_m3}) | "
+                f"🎯 {consensus_tag} APPROVED {symbol}: {final_action} (Votes: {vote_count}/4 | "
+                f"M1={vote_m1}, M2={vote_m2}, M3={vote_m3}, M4={vote_m4}) | "
                 f"Model 4: Bias={strat_bias} ({len(active_strats)}/9 Active, "
                 f"Agree={model4_eval.get('agreement_score', 0.0):.0%}) | Conf: {confidence:.1%}"
             )

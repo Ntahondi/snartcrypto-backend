@@ -79,7 +79,7 @@ async def lifespan(app: FastAPI):
                 from src.core.trading_profiles import get_profile
                 from src.services.portfolio_manager import PortfolioManager
                 
-                profile_name = getattr(settings, 'TRADING_PROFILE', 'test')
+                profile_name = getattr(settings, 'TRADING_PROFILE', 'swing_trader')
                 default_profile = get_profile(profile_name)
                 
                 market_analyzer_instance.portfolio_manager = PortfolioManager(

@@ -1239,10 +1239,15 @@ class PortfolioManager:
             False,
         ):
 
-            if vote_tag not in {
-                "2/3 MAJORITY",
-                "3/3 UNANIMOUS",
-            }:
+            # Accept both 4-model and 3-model majority/supermajority/unanimous tags
+            valid_agreement = (
+                any(term in vote_tag for term in [
+                    "MAJORITY", "UNANIMOUS", "SUPERMAJORITY", "CONSENSUS"
+                ])
+                or majority in {"2/3", "3/3", "2/4", "3/4", "4/4"}
+            )
+
+            if not valid_agreement:
 
                 return False, (
                     "Required ensemble agreement "
@@ -2031,7 +2036,10 @@ class PortfolioManager:
                     "strategy_confirmation",
                     model4.get(
                         "confirmed",
-                        False,
+                        model4.get(
+                            "is_aligned",
+                            float(model4.get("confirmation_score", 0.0)) >= 0.45,
+                        ),
                     ),
                 )
             )
@@ -4380,11 +4388,11 @@ class PortfolioManager:
         signal: Dict[str, Any],
     ) -> bool:
         """
-        Check available timeframe-direction information.
+        Check multi-model timeframe confidence and alignment against active profile.
 
-        The method intentionally accepts multiple common field
-        names because different signal-generation components may
-        serialize their timeframe information differently.
+        Evaluates target timeframe confidence (4H for swing, 1H for day_trader, etc.)
+        against the active profile's min_timeframe_confidence threshold, while ensuring
+        higher-timeframe macro trends do not conflict.
         """
 
         action = str(
@@ -4394,6 +4402,45 @@ class PortfolioManager:
             )
         ).upper()
 
+        if action not in {"BUY", "SELL"}:
+            return True
+
+        # -----------------------------------------------------
+        # 1. Multi-Model Timeframe Confidence Evaluation
+        # -----------------------------------------------------
+        tf_confidence = signal.get("timeframe_confidence")
+        if isinstance(tf_confidence, dict) and tf_confidence:
+            target_tf = getattr(self.profile, "signal_timeframe", None)
+            if hasattr(target_tf, "value"):
+                target_tf_key = str(target_tf.value).lower()
+            elif isinstance(target_tf, str):
+                target_tf_key = target_tf.lower()
+            else:
+                target_tf_key = "4h"
+
+            # Normalize key
+            if target_tf_key in {"h4", "4h"}:
+                target_tf_key = "4h"
+            elif target_tf_key in {"h1", "1h"}:
+                target_tf_key = "1h"
+            elif target_tf_key in {"d1", "1d"}:
+                target_tf_key = "1d"
+
+            target_conf = float(tf_confidence.get(target_tf_key, tf_confidence.get("4h", 0.50)))
+            min_tf_conf = float(getattr(self.profile, "min_timeframe_confidence", 0.45))
+
+            # Macro trend protection: check 1D confidence if trading lower timeframes
+            if target_tf_key in {"1h", "4h"}:
+                macro_conf = float(tf_confidence.get("1d", 0.50))
+                # If macro trend strongly opposes (e.g. < 0.25 confidence in trade direction), reject
+                if macro_conf < 0.25:
+                    return False
+
+            return target_conf >= min_tf_conf
+
+        # -----------------------------------------------------
+        # 2. Direct boolean fallback
+        # -----------------------------------------------------
         timeframe_alignment = signal.get(
             "timeframe_alignment"
         )
@@ -4405,6 +4452,9 @@ class PortfolioManager:
 
             return timeframe_alignment
 
+        # -----------------------------------------------------
+        # 3. Dict fallback
+        # -----------------------------------------------------
         alignment = signal.get(
             "timeframe_confirmation"
         )

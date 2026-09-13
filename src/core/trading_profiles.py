@@ -131,6 +131,7 @@ class TradingProfile:
 
     min_confidence: float = 0.40
     min_signal_strength: float = 0.35
+    min_timeframe_confidence: float = 0.40
 
     require_timeframe_alignment: bool = True
     require_ensemble_agreement: bool = True
@@ -364,6 +365,12 @@ class TradingProfile:
         self._validate_probability(
             self.min_signal_strength,
             "min_signal_strength",
+            errors,
+        )
+
+        self._validate_probability(
+            self.min_timeframe_confidence,
+            "min_timeframe_confidence",
             errors,
         )
 
@@ -874,6 +881,7 @@ def get_profile_test() -> TradingProfile:
 
         min_confidence=0.35,
         min_signal_strength=0.30,
+        min_timeframe_confidence=0.20,
 
         require_timeframe_alignment=False,
         require_ensemble_agreement=False,
@@ -941,6 +949,7 @@ def get_profile_scalper() -> TradingProfile:
 
         min_confidence=0.55,
         min_signal_strength=0.35,
+        min_timeframe_confidence=0.35,
 
         require_timeframe_alignment=False,
         require_ensemble_agreement=True,
@@ -1022,6 +1031,7 @@ def get_profile_day_trader() -> TradingProfile:
 
         min_confidence=0.55,
         min_signal_strength=0.35,
+        min_timeframe_confidence=0.40,
 
         require_timeframe_alignment=False,
         require_ensemble_agreement=True,
@@ -1105,6 +1115,7 @@ def get_profile_swing() -> TradingProfile:
 
         min_confidence=0.45,
         min_signal_strength=0.40,
+        min_timeframe_confidence=0.45,
 
         require_timeframe_alignment=True,
         require_ensemble_agreement=True,
@@ -1186,6 +1197,7 @@ def get_profile_position() -> TradingProfile:
 
         min_confidence=0.60,
         min_signal_strength=0.55,
+        min_timeframe_confidence=0.50,
 
         require_timeframe_alignment=True,
         require_ensemble_agreement=True,
@@ -1258,9 +1270,11 @@ def get_profile_position() -> TradingProfile:
 PROFILES = {
     TradingStyle.SCALPER.value: get_profile_scalper,
     TradingStyle.DAY_TRADER.value: get_profile_day_trader,
+    "day": get_profile_day_trader,
     TradingStyle.SWING.value: get_profile_swing,
     "swing_trader": get_profile_swing,
     TradingStyle.POSITION.value: get_profile_position,
+    "position_trader": get_profile_position,
     TradingStyle.TEST.value: get_profile_test,
 }
 
