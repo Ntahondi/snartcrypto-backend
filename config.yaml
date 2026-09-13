@@ -19,7 +19,7 @@ model:
   prediction_threshold: 0.55
   confidence_threshold: 0.6       # Fallback only
   min_confidence: 0.35            # ✅ Main filter
-  min_strength: 0.40              # ✅ Calibrated filter
+  min_strength: 0.25              # ✅ Calibrated filter
   max_position_size: 0.15
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

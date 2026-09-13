@@ -98,7 +98,7 @@ class SignalGenerator:
                 'transformer': getattr(self.settings, 'POWER_TRANSFORMER_PATH', 'models/power_transformer.joblib'),
                 'features': self.settings.FEATURE_COLUMNS_PATH,
                 'min_confidence': getattr(self.settings, 'MIN_CONFIDENCE', 0.40),
-                'min_strength': getattr(self.settings, 'MIN_SIGNAL_STRENGTH', 0.40),
+                'min_strength': getattr(self.settings, 'MIN_SIGNAL_STRENGTH', 0.25),
                 'max_position_size': getattr(self.settings, 'MAX_POSITION_SIZE', 0.15)
             },
             'trading': {
@@ -128,7 +128,7 @@ class SignalGenerator:
                 'transformer': "models/power_transformer.joblib",
                 'features': "models/feature_columns.joblib",
                 'min_confidence': 0.40,
-                'min_strength': 0.40,
+                'min_strength': 0.25,
                 'max_position_size': 0.15
             },
             'trading': {
@@ -532,10 +532,12 @@ class SignalGenerator:
             )
 
             # Consensus Threshold: >= +0.45 for BUY, <= -0.45 for SELL
-            # (Guarantees that at least one primary model M1 or M4 is active and aligned)
-            if consensus_score >= 0.45:
+            # (Guarantees that at least one primary model M1 or M4 is active and aligned,
+            # using round to avoid IEEE 754 float precision issues like 0.35 + 0.10 = 0.44999999999999996)
+            rounded_consensus = round(float(consensus_score), 2)
+            if rounded_consensus >= 0.45:
                 final_action = 'BUY'
-            elif consensus_score <= -0.45:
+            elif rounded_consensus <= -0.45:
                 final_action = 'SELL'
             else:
                 self.logger.info(
@@ -576,8 +578,8 @@ class SignalGenerator:
                 self.logger.info(f"Skipping SELL on {symbol}: Counter-trend conflict (Regime: {market_regime}, 4h: {action_4h})")
                 return None
 
-            # Minimum Signal Strength Filter (empirical data: strength >= 0.35 required for positive expectancy)
-            min_strength_filter = float(self.config.get('model', {}).get('min_strength', 0.30))
+            # Minimum Signal Strength Filter (calibrated filter: strength >= 0.25 allows healthy market moves)
+            min_strength_filter = float(self.config.get('model', {}).get('min_strength', 0.25))
             if strength < min_strength_filter:
                 self.logger.info(f"Skipping {symbol}: Signal strength {strength:.3f} below required minimum {min_strength_filter:.2f}")
                 return None

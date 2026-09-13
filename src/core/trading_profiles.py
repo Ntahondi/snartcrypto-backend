@@ -947,8 +947,8 @@ def get_profile_scalper() -> TradingProfile:
         position_size_pct=0.20,
         max_holding_hours=2,
 
-        min_confidence=0.55,
-        min_signal_strength=0.35,
+        min_confidence=0.45,
+        min_signal_strength=0.25,
         min_timeframe_confidence=0.35,
 
         require_timeframe_alignment=False,
@@ -1029,8 +1029,8 @@ def get_profile_day_trader() -> TradingProfile:
         position_size_pct=0.20,
         max_holding_hours=8,
 
-        min_confidence=0.55,
-        min_signal_strength=0.35,
+        min_confidence=0.45,
+        min_signal_strength=0.25,
         min_timeframe_confidence=0.40,
 
         require_timeframe_alignment=False,
@@ -1114,7 +1114,7 @@ def get_profile_swing() -> TradingProfile:
         max_holding_hours=24,
 
         min_confidence=0.45,
-        min_signal_strength=0.40,
+        min_signal_strength=0.25,
         min_timeframe_confidence=0.45,
 
         require_timeframe_alignment=True,
@@ -1122,12 +1122,12 @@ def get_profile_swing() -> TradingProfile:
 
         # Regression
         use_regression_model=True,
-        min_expected_return=0.0075,
+        min_expected_return=0.005,
 
         # Smart Trader
         use_smart_trader_model=True,
-        require_4h_direction=True,
-        require_1d_confirmation=True,
+        require_4h_direction=False,
+        require_1d_confirmation=False,
 
         # Market GPT
         use_market_gpt_model=True,
@@ -1137,11 +1137,11 @@ def get_profile_swing() -> TradingProfile:
         use_model4_strategy_detector=True,
         model4_min_strategy_probability=0.55,
         model4_strong_strategy_probability=0.75,
-        model4_min_active_strategies=1,
+        model4_min_active_strategies=0,
         model4_max_active_strategies=9,
         model4_require_strong_strategy=False,
         model4_use_as_direction_vote=False,
-        model4_require_strategy_confirmation=True,
+        model4_require_strategy_confirmation=False,
 
         # Risk
         stop_loss_atr_mult=1.5,
